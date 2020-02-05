@@ -1547,13 +1547,10 @@ EXPORT_SYMBOL_GPL(ip6_update_pmtu);
 
 void ip6_sk_update_pmtu(struct sk_buff *skb, struct sock *sk, __be32 mtu)
 {
-	int oif = sk->sk_bound_dev_if;
 	struct dst_entry *dst;
 
-	if (!oif && skb->dev)
-		oif = l3mdev_master_ifindex(skb->dev);
-
-	ip6_update_pmtu(skb, sock_net(sk), mtu, oif, sk->sk_mark, sk->sk_uid);
+	ip6_update_pmtu(skb, sock_net(sk), mtu,
+			sk->sk_bound_dev_if, sk->sk_mark, sk->sk_uid);
 
 	dst = __sk_dst_get(sk);
 	if (!dst || !dst->obsolete ||
@@ -2708,12 +2705,14 @@ static int ip6_pkt_drop(struct sk_buff *skb, u8 code, int ipstats_mib_noroutes)
 		if (type == IPV6_ADDR_ANY) {
 			IP6_INC_STATS(dev_net(dst->dev), ip6_dst_idev(dst),
 				      IPSTATS_MIB_INADDRERRORS);
+			DROPDUMP_QUEUE_SKB(skb, NET_DROPDUMP_IPSTATS_MIB_INADDRERRORS);
 			break;
 		}
 		/* FALLTHROUGH */
 	case IPSTATS_MIB_OUTNOROUTES:
 		IP6_INC_STATS(dev_net(dst->dev), ip6_dst_idev(dst),
 			      ipstats_mib_noroutes);
+		DROPDUMP_QUEUE_SKB(NULL, NET_DROPDUMP_IPSTATS_MIB_OUTNOROUTES);
 		break;
 	}
 	icmpv6_send(skb, ICMPV6_DEST_UNREACH, code, 0);
@@ -2723,23 +2722,27 @@ static int ip6_pkt_drop(struct sk_buff *skb, u8 code, int ipstats_mib_noroutes)
 
 static int ip6_pkt_discard(struct sk_buff *skb)
 {
+	DROPDUMP_QUEUE_SKB(skb, NET_DROPDUMP_IPSTATS_MIB_INNOROUTES);
 	return ip6_pkt_drop(skb, ICMPV6_NOROUTE, IPSTATS_MIB_INNOROUTES);
 }
 
 static int ip6_pkt_discard_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	skb->dev = skb_dst(skb)->dev;
+	DROPDUMP_QUEUE_SKB(NULL, NET_DROPDUMP_IPSTATS_MIB_OUTNOROUTES);
 	return ip6_pkt_drop(skb, ICMPV6_NOROUTE, IPSTATS_MIB_OUTNOROUTES);
 }
 
 static int ip6_pkt_prohibit(struct sk_buff *skb)
 {
+	DROPDUMP_QUEUE_SKB(skb, NET_DROPDUMP_IPSTATS_MIB_INNOROUTES);
 	return ip6_pkt_drop(skb, ICMPV6_ADM_PROHIBITED, IPSTATS_MIB_INNOROUTES);
 }
 
 static int ip6_pkt_prohibit_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	skb->dev = skb_dst(skb)->dev;
+	DROPDUMP_QUEUE_SKB(NULL, NET_DROPDUMP_IPSTATS_MIB_OUTNOROUTES);
 	return ip6_pkt_drop(skb, ICMPV6_ADM_PROHIBITED, IPSTATS_MIB_OUTNOROUTES);
 }
 
@@ -3214,16 +3217,11 @@ static int ip6_route_multipath_add(struct fib6_config *cfg,
 
 	err_nh = NULL;
 	list_for_each_entry(nh, &rt6_nh_list, next) {
+		rt_last = nh->rt6_info;
 		err = __ip6_ins_rt(nh->rt6_info, info, &nh->mxc, extack);
-
-		if (!err) {
-			/* save reference to last route successfully inserted */
-			rt_last = nh->rt6_info;
-
-			/* save reference to first route for notification */
-			if (!rt_notif)
-				rt_notif = nh->rt6_info;
-		}
+		/* save reference to first route for notification */
+		if (!rt_notif && !err)
+			rt_notif = nh->rt6_info;
 
 		/* nh->rt6_info is used or freed at this point, reset to NULL*/
 		nh->rt6_info = NULL;

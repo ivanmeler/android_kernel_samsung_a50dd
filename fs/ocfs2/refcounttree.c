@@ -2946,7 +2946,6 @@ int ocfs2_duplicate_clusters_by_page(handle_t *handle,
 		if (map_end & (PAGE_SIZE - 1))
 			to = map_end & (PAGE_SIZE - 1);
 
-retry:
 		page = find_or_create_page(mapping, page_index, GFP_NOFS);
 		if (!page) {
 			ret = -ENOMEM;
@@ -2955,18 +2954,11 @@ retry:
 		}
 
 		/*
-		 * In case PAGE_SIZE <= CLUSTER_SIZE, we do not expect a dirty
-		 * page, so write it back.
+		 * In case PAGE_SIZE <= CLUSTER_SIZE, This page
+		 * can't be dirtied before we CoW it out.
 		 */
-		if (PAGE_SIZE <= OCFS2_SB(sb)->s_clustersize) {
-			if (PageDirty(page)) {
-				/*
-				 * write_on_page will unlock the page on return
-				 */
-				ret = write_one_page(page);
-				goto retry;
-			}
-		}
+		if (PAGE_SIZE <= OCFS2_SB(sb)->s_clustersize)
+			BUG_ON(PageDirty(page));
 
 		if (!PageUptodate(page)) {
 			ret = block_read_full_page(page, ocfs2_get_block);

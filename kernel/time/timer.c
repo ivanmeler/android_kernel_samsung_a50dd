@@ -42,8 +42,10 @@
 #include <linux/sched/sysctl.h>
 #include <linux/sched/nohz.h>
 #include <linux/sched/debug.h>
+#include <linux/sched/clock.h>
 #include <linux/slab.h>
 #include <linux/compat.h>
+#include <linux/debug-snapshot.h>
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
@@ -1255,6 +1257,7 @@ static void call_timer_fn(struct timer_list *timer, void (*fn)(unsigned long),
 			  unsigned long data)
 {
 	int count = preempt_count();
+	unsigned long long start_time;
 
 #ifdef CONFIG_LOCKDEP
 	/*
@@ -1275,8 +1278,11 @@ static void call_timer_fn(struct timer_list *timer, void (*fn)(unsigned long),
 	 */
 	lock_map_acquire(&lockdep_map);
 
+	dbg_snapshot_irq_var(start_time);
 	trace_timer_expire_entry(timer);
+	dbg_snapshot_irq(DSS_FLAG_CALL_TIMER_FN, fn, NULL, 0, DSS_FLAG_IN);
 	fn(data);
+	dbg_snapshot_irq(DSS_FLAG_CALL_TIMER_FN, fn, NULL, start_time, DSS_FLAG_OUT);
 	trace_timer_expire_exit(timer);
 
 	lock_map_release(&lockdep_map);
@@ -1609,22 +1615,6 @@ static inline void __run_timers(struct timer_base *base)
 
 	raw_spin_lock_irq(&base->lock);
 
-	/*
-	 * timer_base::must_forward_clk must be cleared before running
-	 * timers so that any timer functions that call mod_timer() will
-	 * not try to forward the base. Idle tracking / clock forwarding
-	 * logic is only used with BASE_STD timers.
-	 *
-	 * The must_forward_clk flag is cleared unconditionally also for
-	 * the deferrable base. The deferrable base is not affected by idle
-	 * tracking and never forwarded, so clearing the flag is a NOOP.
-	 *
-	 * The fact that the deferrable base is never forwarded can cause
-	 * large variations in granularity for deferrable timers, but they
-	 * can be deferred for long periods due to idle anyway.
-	 */
-	base->must_forward_clk = false;
-
 	while (time_after_eq(jiffies, base->clk)) {
 
 		levels = collect_expired_timers(base, heads);
@@ -1643,6 +1633,19 @@ static inline void __run_timers(struct timer_base *base)
 static __latent_entropy void run_timer_softirq(struct softirq_action *h)
 {
 	struct timer_base *base = this_cpu_ptr(&timer_bases[BASE_STD]);
+
+	/*
+	 * must_forward_clk must be cleared before running timers so that any
+	 * timer functions that call mod_timer will not try to forward the
+	 * base. idle trcking / clock forwarding logic is only used with
+	 * BASE_STD timers.
+	 *
+	 * The deferrable base does not do idle tracking at all, so we do
+	 * not forward it. This can result in very large variations in
+	 * granularity for deferrable timers, but they can be deferred for
+	 * long periods due to idle.
+	 */
+	base->must_forward_clk = false;
 
 	__run_timers(base);
 	if (IS_ENABLED(CONFIG_NO_HZ_COMMON))

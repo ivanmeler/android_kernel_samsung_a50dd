@@ -989,15 +989,6 @@ static int zswap_frontswap_store(unsigned type, pgoff_t offset,
 			ret = -ENOMEM;
 			goto reject;
 		}
-
-		/* A second zswap_is_full() check after
-		 * zswap_shrink() to make sure it's now
-		 * under the max_pool_percent
-		 */
-		if (zswap_is_full()) {
-			ret = -ENOMEM;
-			goto reject;
-		}
 	}
 
 	/* allocate entry */
@@ -1241,6 +1232,25 @@ static int __init zswap_debugfs_init(void)
 static void __exit zswap_debugfs_exit(void) { }
 #endif
 
+static int zswap_size_notifier(struct notifier_block *nb,
+			       unsigned long action, void *data)
+{
+	struct seq_file *s;
+
+	s = (struct seq_file *)data;
+	if (s)
+		seq_printf(s, "ZSwapDevice:    %8lu kB\n",
+			(unsigned long)zswap_pool_total_size >> 10);
+	else
+		pr_cont("ZSwapDevice:%lukB ",
+			(unsigned long)zswap_pool_total_size >> 10);
+	return 0;
+}
+
+static struct notifier_block zswap_size_nb = {
+	.notifier_call = zswap_size_notifier,
+};
+
 /*********************************
 * module init and exit
 **********************************/
@@ -1284,6 +1294,8 @@ static int __init init_zswap(void)
 	frontswap_register_ops(&zswap_frontswap_ops);
 	if (zswap_debugfs_init())
 		pr_warn("debugfs initialization failed\n");
+	
+	show_mem_extra_notifier_register(&zswap_size_nb);
 	return 0;
 
 hp_fail:

@@ -51,6 +51,10 @@
 #include <asm/cacheflush.h>
 #include "audit.h"	/* audit_signal_info() */
 
+#ifdef CONFIG_SAMSUNG_FREECESS
+#include <linux/freecess.h>
+#endif
+
 /*
  * SLAB caches for signal bits.
  */
@@ -1003,7 +1007,7 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
 
 	result = TRACE_SIGNAL_IGNORED;
 	if (!prepare_signal(sig, t,
-			from_ancestor_ns || (info == SEND_SIG_PRIV) || (info == SEND_SIG_FORCED)))
+			from_ancestor_ns || (info == SEND_SIG_FORCED)))
 		goto ret;
 
 	pending = group ? &t->signal->shared_pending : &t->pending;
@@ -1157,6 +1161,10 @@ int do_send_sig_info(int sig, struct siginfo *info, struct task_struct *p,
 {
 	unsigned long flags;
 	int ret = -ESRCH;
+#ifdef CONFIG_SAMSUNG_FREECESS
+        if ((sig == SIGKILL || sig == SIGTERM || sig == SIGABRT || sig == SIGQUIT)) 
+                sig_report(current, p);
+#endif
 
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, group);
@@ -2700,7 +2708,7 @@ COMPAT_SYSCALL_DEFINE2(rt_sigpending, compat_sigset_t __user *, uset,
 }
 #endif
 
-enum siginfo_layout siginfo_layout(unsigned sig, int si_code)
+enum siginfo_layout siginfo_layout(int sig, int si_code)
 {
 	enum siginfo_layout layout = SIL_KILL;
 	if ((si_code > SI_USER) && (si_code < SI_KERNEL)) {
@@ -3215,8 +3223,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
 }
 
 static int
-do_sigaltstack (const stack_t *ss, stack_t *oss, unsigned long sp,
-		size_t min_ss_size)
+do_sigaltstack (const stack_t *ss, stack_t *oss, unsigned long sp)
 {
 	struct task_struct *t = current;
 
@@ -3246,7 +3253,7 @@ do_sigaltstack (const stack_t *ss, stack_t *oss, unsigned long sp,
 			ss_size = 0;
 			ss_sp = NULL;
 		} else {
-			if (unlikely(ss_size < min_ss_size))
+			if (unlikely(ss_size < MINSIGSTKSZ))
 				return -ENOMEM;
 		}
 
@@ -3264,8 +3271,7 @@ SYSCALL_DEFINE2(sigaltstack,const stack_t __user *,uss, stack_t __user *,uoss)
 	if (uss && copy_from_user(&new, uss, sizeof(stack_t)))
 		return -EFAULT;
 	err = do_sigaltstack(uss ? &new : NULL, uoss ? &old : NULL,
-			      current_user_stack_pointer(),
-			      MINSIGSTKSZ);
+			      current_user_stack_pointer());
 	if (!err && uoss && copy_to_user(uoss, &old, sizeof(stack_t)))
 		err = -EFAULT;
 	return err;
@@ -3276,8 +3282,7 @@ int restore_altstack(const stack_t __user *uss)
 	stack_t new;
 	if (copy_from_user(&new, uss, sizeof(stack_t)))
 		return -EFAULT;
-	(void)do_sigaltstack(&new, NULL, current_user_stack_pointer(),
-			     MINSIGSTKSZ);
+	(void)do_sigaltstack(&new, NULL, current_user_stack_pointer());
 	/* squash all but EFAULT for now */
 	return 0;
 }
@@ -3312,8 +3317,7 @@ COMPAT_SYSCALL_DEFINE2(sigaltstack,
 		uss.ss_size = uss32.ss_size;
 	}
 	ret = do_sigaltstack(uss_ptr ? &uss : NULL, &uoss,
-			     compat_user_stack_pointer(),
-			     COMPAT_MINSIGSTKSZ);
+			     compat_user_stack_pointer());
 	if (ret >= 0 && uoss_ptr)  {
 		compat_stack_t old;
 		memset(&old, 0, sizeof(old));

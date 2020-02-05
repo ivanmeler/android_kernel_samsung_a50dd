@@ -23,6 +23,7 @@
 
 #include "scsi_priv.h"
 #include "scsi_logging.h"
+#include "ufs/ufshcd.h"
 
 static struct device_type scsi_dev_type;
 
@@ -264,6 +265,16 @@ show_shost_supported_mode(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR(supported_mode, S_IRUGO | S_IWUSR, show_shost_supported_mode, NULL);
 
+/* for Argos */
+static ssize_t show_shost_transferred_cnt(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    struct Scsi_Host *shost = class_to_shost(dev);
+    struct ufs_hba *hba = shost_priv(shost);
+
+    return sprintf(buf, "%u\n", hba->transferred_sector);
+}
+static DEVICE_ATTR(transferred_cnt, 0444, show_shost_transferred_cnt, NULL);
+
 static ssize_t
 show_shost_active_mode(struct device *dev,
 		       struct device_attribute *attr, char *buf)
@@ -403,6 +414,7 @@ static struct attribute *scsi_sysfs_shost_attrs[] = {
 	&dev_attr_prot_guard_type.attr,
 	&dev_attr_host_reset.attr,
 	&dev_attr_eh_deadline.attr,
+	&dev_attr_transferred_cnt.attr,
 	NULL
 };
 
@@ -721,24 +733,8 @@ static ssize_t
 sdev_store_delete(struct device *dev, struct device_attribute *attr,
 		  const char *buf, size_t count)
 {
-	struct kernfs_node *kn;
-
-	kn = sysfs_break_active_protection(&dev->kobj, &attr->attr);
-	WARN_ON_ONCE(!kn);
-	/*
-	 * Concurrent writes into the "delete" sysfs attribute may trigger
-	 * concurrent calls to device_remove_file() and scsi_remove_device().
-	 * device_remove_file() handles concurrent removal calls by
-	 * serializing these and by ignoring the second and later removal
-	 * attempts.  Concurrent calls of scsi_remove_device() are
-	 * serialized. The second and later calls of scsi_remove_device() are
-	 * ignored because the first call of that function changes the device
-	 * state into SDEV_DEL.
-	 */
-	device_remove_file(dev, attr);
-	scsi_remove_device(to_scsi_device(dev));
-	if (kn)
-		sysfs_unbreak_active_protection(kn);
+	if (device_remove_file_self(dev, attr))
+		scsi_remove_device(to_scsi_device(dev));
 	return count;
 };
 static DEVICE_ATTR(delete, S_IWUSR, NULL, sdev_store_delete);

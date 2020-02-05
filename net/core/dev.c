@@ -383,6 +383,11 @@ static inline void netdev_set_addr_lockdep_class(struct net_device *dev)
 
 static inline struct list_head *ptype_head(const struct packet_type *pt)
 {
+	struct list_head *ret = dropdump_ptype_head(pt);
+
+	if (unlikely(ret))
+		return ret;
+
 	if (pt->type == htons(ETH_P_ALL))
 		return pt->dev ? &pt->dev->ptype_all : &ptype_all;
 	else
@@ -1687,28 +1692,6 @@ int call_netdevice_notifiers(unsigned long val, struct net_device *dev)
 	return call_netdevice_notifiers_info(val, dev, &info);
 }
 EXPORT_SYMBOL(call_netdevice_notifiers);
-
-/**
- *	call_netdevice_notifiers_mtu - call all network notifier blocks
- *	@val: value passed unmodified to notifier function
- *	@dev: net_device pointer passed unmodified to notifier function
- *	@arg: additional u32 argument passed to the notifier function
- *
- *	Call all network notifier blocks.  Parameters and return value
- *	are as for raw_notifier_call_chain().
- */
-static int call_netdevice_notifiers_mtu(unsigned long val,
-					struct net_device *dev, u32 arg)
-{
-	struct netdev_notifier_info_ext info = {
-		.info.dev = dev,
-		.ext.mtu = arg,
-	};
-
-	BUILD_BUG_ON(offsetof(struct netdev_notifier_info_ext, info) != 0);
-
-	return call_netdevice_notifiers_info(val, dev, &info.info);
-}
 
 #ifdef CONFIG_NET_INGRESS
 static struct static_key ingress_needed __read_mostly;
@@ -4993,10 +4976,6 @@ static void napi_reuse_skb(struct napi_struct *napi, struct sk_buff *skb)
 	skb->vlan_tci = 0;
 	skb->dev = napi->dev;
 	skb->skb_iif = 0;
-
-	/* eth_type_trans() assumes pkt_type is PACKET_HOST */
-	skb->pkt_type = PACKET_HOST;
-
 	skb->encapsulation = 0;
 	skb_shinfo(skb)->gso_type = 0;
 	skb->truesize = SKB_TRUESIZE(skb_end_offset(skb));
@@ -5198,7 +5177,11 @@ static int process_backlog(struct napi_struct *napi, int quota)
 			rcu_read_unlock();
 			input_queue_head_incr(sd);
 			if (++work >= quota)
+#ifdef CONFIG_MODEM_IF_NET_GRO
+				goto state_changed;
+#else
 				return work;
+#endif
 
 		}
 
@@ -5222,6 +5205,12 @@ static int process_backlog(struct napi_struct *napi, int quota)
 		rps_unlock(sd);
 		local_irq_enable();
 	}
+
+#ifdef CONFIG_MODEM_IF_NET_GRO
+state_changed:
+	napi_gro_flush(napi, false);
+	sd->current_napi = NULL;
+#endif
 
 	return work;
 }
@@ -5592,6 +5581,11 @@ static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 	 */
 	work = 0;
 	if (test_bit(NAPI_STATE_SCHED, &n->state)) {
+#ifdef CONFIG_MODEM_IF_NET_GRO
+		struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+		sd->current_napi = n;
+#endif
 		work = n->poll(n, weight);
 		trace_napi_poll(n, work, weight);
 	}
@@ -5634,6 +5628,20 @@ out_unlock:
 
 	return work;
 }
+
+#if defined(CONFIG_SEC_SIPC_MODEM_IF) || defined(CONFIG_SEC_SIPC_DUAL_MODEM_IF)
+struct napi_struct *napi_get_current(void)
+{
+#ifdef CONFIG_MODEM_IF_NET_GRO
+	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+	return sd->current_napi;
+#else
+	return NULL;
+#endif
+}
+EXPORT_SYMBOL(napi_get_current);
+#endif
 
 static __latent_entropy void net_rx_action(struct softirq_action *h)
 {
@@ -6917,16 +6925,14 @@ int dev_set_mtu(struct net_device *dev, int new_mtu)
 	err = __dev_set_mtu(dev, new_mtu);
 
 	if (!err) {
-		err = call_netdevice_notifiers_mtu(NETDEV_CHANGEMTU, dev,
-						   orig_mtu);
+		err = call_netdevice_notifiers(NETDEV_CHANGEMTU, dev);
 		err = notifier_to_errno(err);
 		if (err) {
 			/* setting mtu back and notifying everyone again,
 			 * so that they have a chance to revert changes.
 			 */
 			__dev_set_mtu(dev, orig_mtu);
-			call_netdevice_notifiers_mtu(NETDEV_CHANGEMTU, dev,
-						     new_mtu);
+			call_netdevice_notifiers(NETDEV_CHANGEMTU, dev);
 		}
 	}
 	return err;
@@ -8325,8 +8331,7 @@ int dev_change_net_namespace(struct net_device *dev, struct net *net, const char
 		/* We get here if we can't use the current device name */
 		if (!pat)
 			goto out;
-		err = dev_get_valid_name(net, dev, pat);
-		if (err < 0)
+		if (dev_get_valid_name(net, dev, pat) < 0)
 			goto out;
 	}
 
@@ -8338,6 +8343,7 @@ int dev_change_net_namespace(struct net_device *dev, struct net *net, const char
 	dev_close(dev);
 
 	/* And unlink it from device chain */
+	err = -ENODEV;
 	unlist_netdevice(dev);
 
 	synchronize_net();

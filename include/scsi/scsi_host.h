@@ -452,9 +452,6 @@ struct scsi_host_template {
 	/* True if the controller does not support WRITE SAME */
 	unsigned no_write_same:1;
 
-	/* True if the low-level driver supports blk-mq only */
-	unsigned force_blk_mq:1;
-
 	/*
 	 * Countdown for host blocking with no commands outstanding.
 	 */
@@ -704,6 +701,7 @@ struct Scsi_Host {
 	
 
 	enum scsi_host_state shost_state;
+	bool wlun_clr_uac;
 
 	/* ldm bits */
 	struct device		shost_gendev, shost_dev;
@@ -728,7 +726,21 @@ struct Scsi_Host {
 	 * Needed just in case we have virtual hosts.
 	 */
 	struct device *dma_dev;
-
+#ifdef CONFIG_USB_STORAGE_DETECT
+	unsigned int  by_usb;
+#endif
+	unsigned int  by_ufs;
+	unsigned int medium_err_cnt;
+	unsigned int hw_err_cnt;
+#define SEC_MAX_LBA_LOGGING	10 
+#define SEC_ISSUE_REGION_STEP	(200*1024/4)	/* 200MB : 1 LBA = 4KB */ 
+	unsigned long issue_LBA_list[SEC_MAX_LBA_LOGGING]; 
+	unsigned int issue_LBA_count; 
+	u64 issue_region_map; 
+	unsigned int  ufs_system_start;
+	unsigned int  ufs_system_end;
+	bool ufs_sys_log_en;
+	
 	/*
 	 * We should ensure that this is aligned, both for better performance
 	 * and also because some compilers (m68k) don't automatically force

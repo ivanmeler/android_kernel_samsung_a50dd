@@ -20,6 +20,7 @@
 #include <linux/sched/task.h>
 #include <uapi/linux/sched/types.h>
 #include <linux/task_work.h>
+#include <linux/sec_debug.h>
 
 #include "internals.h"
 
@@ -102,6 +103,8 @@ void synchronize_irq(unsigned int irq)
 	struct irq_desc *desc = irq_to_desc(irq);
 
 	if (desc) {
+		sec_debug_set_task_in_sync_irq((uint64_t)current, irq, (desc && desc->action) ? desc->action->name : NULL, desc);
+
 		__synchronize_hardirq(desc);
 		/*
 		 * We made sure that no hardirq handler is
@@ -109,7 +112,9 @@ void synchronize_irq(unsigned int irq)
 		 * active.
 		 */
 		wait_event(desc->wait_for_threads,
-			   !atomic_read(&desc->threads_active));
+				!atomic_read(&desc->threads_active));
+
+		sec_debug_set_task_in_sync_irq(0, 0, 0, 0);
 	}
 }
 EXPORT_SYMBOL(synchronize_irq);
@@ -882,9 +887,6 @@ irq_forced_thread_fn(struct irq_desc *desc, struct irqaction *action)
 
 	local_bh_disable();
 	ret = action->thread_fn(action->irq, action->dev_id);
-	if (ret == IRQ_HANDLED)
-		atomic_inc(&desc->threads_handled);
-
 	irq_finalize_oneshot(desc, action);
 	local_bh_enable();
 	return ret;
@@ -901,9 +903,6 @@ static irqreturn_t irq_thread_fn(struct irq_desc *desc,
 	irqreturn_t ret;
 
 	ret = action->thread_fn(action->irq, action->dev_id);
-	if (ret == IRQ_HANDLED)
-		atomic_inc(&desc->threads_handled);
-
 	irq_finalize_oneshot(desc, action);
 	return ret;
 }
@@ -981,6 +980,8 @@ static int irq_thread(void *data)
 		irq_thread_check_affinity(desc, action);
 
 		action_ret = handler_fn(desc, action);
+		if (action_ret == IRQ_HANDLED)
+			atomic_inc(&desc->threads_handled);
 		if (action_ret == IRQ_WAKE_THREAD)
 			irq_wake_secondary(desc, action);
 
@@ -1382,6 +1383,9 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 			irqd_set(&desc->irq_data, IRQD_NO_BALANCING);
 		}
 
+		if (new->flags & IRQF_GIC_MULTI_TARGET)
+			irqd_set(&desc->irq_data, IRQD_GIC_MULTI_TARGET);
+
 		if (irq_settings_can_autoenable(desc)) {
 			irq_startup(desc, IRQ_RESEND, IRQ_START_COND);
 		} else {
@@ -1395,7 +1399,6 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 			/* Undo nested disables: */
 			desc->depth = 1;
 		}
-
 	} else if (new->flags & IRQF_TRIGGER_MASK) {
 		unsigned int nmsk = new->flags & IRQF_TRIGGER_MASK;
 		unsigned int omsk = irqd_get_trigger_type(&desc->irq_data);

@@ -2185,8 +2185,16 @@ static bool tcp_small_queue_check(struct sock *sk, const struct sk_buff *skb,
 	unsigned int limit;
 
 	limit = max(2 * skb->truesize, sk->sk_pacing_rate >> 10);
-	limit = min_t(u32, limit, sysctl_tcp_limit_output_bytes);
-	limit <<= factor;
+	if (factor > 0) {
+		limit = min_t(u32, limit, sysctl_tcp_limit_output_bytes);
+		limit <<= factor;
+	} else {
+		/* FIXME: P170118-06256/P171122-01021/P171122-00262
+		 * Disable TSQ to avoid TSQ full and UL TP degression in
+		 * bad network condition
+		 */
+		limit = max_t(u32, limit, 4194304);
+	}
 
 	if (refcount_read(&sk->sk_wmem_alloc) > limit) {
 		/* Always send the 1st or 2nd skb in write queue.
@@ -3513,6 +3521,8 @@ void tcp_send_delayed_ack(struct sock *sk)
 	int ato = icsk->icsk_ack.ato;
 	unsigned long timeout;
 
+	tcp_ca_event(sk, CA_EVENT_DELAYED_ACK);
+
 	if (ato > TCP_DELACK_MIN) {
 		const struct tcp_sock *tp = tcp_sk(sk);
 		int max_ato = HZ / 2;
@@ -3568,6 +3578,8 @@ void __tcp_send_ack(struct sock *sk, u32 rcv_nxt)
 	/* If we have been reset, we may not send again. */
 	if (sk->sk_state == TCP_CLOSE)
 		return;
+
+	tcp_ca_event(sk, CA_EVENT_NON_DELAYED_ACK);
 
 	/* We are not putting this on the write queue, so
 	 * tcp_transmit_skb() will set the ownership to this

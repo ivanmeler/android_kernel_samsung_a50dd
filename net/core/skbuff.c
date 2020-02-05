@@ -76,6 +76,7 @@
 #include <linux/highmem.h>
 #include <linux/capability.h>
 #include <linux/user_namespace.h>
+#include <soc/samsung/exynos-modem-ctrl.h>
 
 struct kmem_cache *skbuff_head_cache __read_mostly;
 static struct kmem_cache *skbuff_fclone_cache __read_mostly;
@@ -544,6 +545,9 @@ static void skb_free_head(struct sk_buff *skb)
 {
 	unsigned char *head = skb->head;
 
+	if (skb_free_head_cp_zerocopy(skb))
+		return;
+
 	if (skb->head_frag)
 		skb_free_frag(head);
 	else
@@ -936,6 +940,9 @@ struct ubuf_info *sock_zerocopy_alloc(struct sock *sk, size_t size)
 	struct sk_buff *skb;
 
 	WARN_ON_ONCE(!in_task());
+
+	if (!sock_flag(sk, SOCK_ZEROCOPY))
+		return NULL;
 
 	skb = sock_omalloc(sk, 0, GFP_KERNEL);
 	if (!skb)
@@ -1835,21 +1842,6 @@ done:
 	return 0;
 }
 EXPORT_SYMBOL(___pskb_trim);
-
-/* Note : use pskb_trim_rcsum() instead of calling this directly
- */
-int pskb_trim_rcsum_slow(struct sk_buff *skb, unsigned int len)
-{
-	if (skb->ip_summed == CHECKSUM_COMPLETE) {
-		int delta = skb->len - len;
-
-		skb->csum = csum_block_sub(skb->csum,
-					   skb_checksum(skb, len, delta, 0),
-					   len);
-	}
-	return __pskb_trim(skb, len);
-}
-EXPORT_SYMBOL(pskb_trim_rcsum_slow);
 
 /**
  *	__pskb_pull_tail - advance tail of skb header
@@ -2854,27 +2846,20 @@ EXPORT_SYMBOL(skb_queue_purge);
 /**
  *	skb_rbtree_purge - empty a skb rbtree
  *	@root: root of the rbtree to empty
- *	Return value: the sum of truesizes of all purged skbs.
  *
  *	Delete all buffers on an &sk_buff rbtree. Each buffer is removed from
  *	the list and one reference dropped. This function does not take
  *	any lock. Synchronization should be handled by the caller (e.g., TCP
  *	out-of-order queue is protected by the socket lock).
  */
-unsigned int skb_rbtree_purge(struct rb_root *root)
+void skb_rbtree_purge(struct rb_root *root)
 {
-	struct rb_node *p = rb_first(root);
-	unsigned int sum = 0;
+	struct sk_buff *skb, *next;
 
-	while (p) {
-		struct sk_buff *skb = rb_entry(p, struct sk_buff, rbnode);
-
-		p = rb_next(p);
-		rb_erase(&skb->rbnode, root);
-		sum += skb->truesize;
+	rbtree_postorder_for_each_entry_safe(skb, next, root, rbnode)
 		kfree_skb(skb);
-	}
-	return sum;
+
+	*root = RB_ROOT;
 }
 
 /**

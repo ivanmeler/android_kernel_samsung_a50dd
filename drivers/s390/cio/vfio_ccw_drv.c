@@ -176,7 +176,6 @@ static int vfio_ccw_sch_event(struct subchannel *sch, int process)
 {
 	struct vfio_ccw_private *private = dev_get_drvdata(&sch->dev);
 	unsigned long flags;
-	int rc = -EAGAIN;
 
 	spin_lock_irqsave(sch->lock, flags);
 	if (!device_is_registered(&sch->dev))
@@ -187,7 +186,6 @@ static int vfio_ccw_sch_event(struct subchannel *sch, int process)
 
 	if (cio_update_schib(sch)) {
 		vfio_ccw_fsm_event(private, VFIO_CCW_EVENT_NOT_OPER);
-		rc = 0;
 		goto out_unlock;
 	}
 
@@ -196,12 +194,11 @@ static int vfio_ccw_sch_event(struct subchannel *sch, int process)
 		private->state = private->mdev ? VFIO_CCW_STATE_IDLE :
 				 VFIO_CCW_STATE_STANDBY;
 	}
-	rc = 0;
 
 out_unlock:
 	spin_unlock_irqrestore(sch->lock, flags);
 
-	return rc;
+	return 0;
 }
 
 static struct css_device_id vfio_ccw_sch_ids[] = {

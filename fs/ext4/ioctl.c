@@ -24,6 +24,10 @@
 #include "fsmap.h"
 #include <trace/events/ext4.h>
 
+#ifdef CONFIG_FSCRYPT_SDP
+#include <linux/fscrypto_sdp_ioctl.h>
+#endif
+
 /**
  * Swap memory between @a and @b for @len bytes.
  *
@@ -344,14 +348,19 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 	if (projid_eq(kprojid, EXT4_I(inode)->i_projid))
 		return 0;
 
+	err = mnt_want_write_file(filp);
+	if (err)
+		return err;
+
 	err = -EPERM;
+	inode_lock(inode);
 	/* Is it quota file? Do not allow user to mess with it */
 	if (ext4_is_quota_file(inode))
-		return err;
+		goto out_unlock;
 
 	err = ext4_get_inode_loc(inode, &iloc);
 	if (err)
-		return err;
+		goto out_unlock;
 
 	raw_inode = ext4_raw_inode(&iloc);
 	if (!EXT4_FITS_IN_INODE(raw_inode, ei, i_projid)) {
@@ -359,20 +368,20 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 					      EXT4_SB(sb)->s_want_extra_isize,
 					      &iloc);
 		if (err)
-			return err;
+			goto out_unlock;
 	} else {
 		brelse(iloc.bh);
 	}
 
-	err = dquot_initialize(inode);
-	if (err)
-		return err;
+	dquot_initialize(inode);
 
 	handle = ext4_journal_start(inode, EXT4_HT_QUOTA,
 		EXT4_QUOTA_INIT_BLOCKS(sb) +
 		EXT4_QUOTA_DEL_BLOCKS(sb) + 3);
-	if (IS_ERR(handle))
-		return PTR_ERR(handle);
+	if (IS_ERR(handle)) {
+		err = PTR_ERR(handle);
+		goto out_unlock;
+	}
 
 	err = ext4_reserve_inode_write(handle, inode, &iloc);
 	if (err)
@@ -400,6 +409,9 @@ out_dirty:
 		err = rc;
 out_stop:
 	ext4_journal_stop(handle);
+out_unlock:
+	inode_unlock(inode);
+	mnt_drop_write_file(filp);
 	return err;
 }
 #else
@@ -580,30 +592,6 @@ static int ext4_ioc_getfsmap(struct super_block *sb,
 	head.fmh_oflags = xhead.fmh_oflags;
 	if (copy_to_user(arg, &head, sizeof(struct fsmap_head)))
 		return -EFAULT;
-
-	return 0;
-}
-
-static int ext4_ioctl_check_project(struct inode *inode, struct fsxattr *fa)
-{
-	/*
-	 * Project Quota ID state is only allowed to change from within the init
-	 * namespace. Enforce that restriction only if we are trying to change
-	 * the quota ID state. Everything else is allowed in user namespaces.
-	 */
-	if (current_user_ns() == &init_user_ns)
-		return 0;
-
-	if (__kprojid_val(EXT4_I(inode)->i_projid) != fa->fsx_projid)
-		return -EINVAL;
-
-	if (ext4_test_inode_flag(inode, EXT4_INODE_PROJINHERIT)) {
-		if (!(fa->fsx_xflags & FS_XFLAG_PROJINHERIT))
-			return -EINVAL;
-	} else {
-		if (fa->fsx_xflags & FS_XFLAG_PROJINHERIT)
-			return -EINVAL;
-	}
 
 	return 0;
 }
@@ -1045,22 +1033,38 @@ resizefs_out:
 			return err;
 
 		inode_lock(inode);
-		err = ext4_ioctl_check_project(inode, &fa);
-		if (err)
-			goto out;
 		flags = (ei->i_flags & ~EXT4_FL_XFLAG_VISIBLE) |
 			 (flags & EXT4_FL_XFLAG_VISIBLE);
 		err = ext4_ioctl_setflags(inode, flags);
-		if (err)
-			goto out;
-		err = ext4_ioctl_setproject(filp, fa.fsx_projid);
-out:
 		inode_unlock(inode);
 		mnt_drop_write_file(filp);
-		return err;
+		if (err)
+			return err;
+
+		err = ext4_ioctl_setproject(filp, fa.fsx_projid);
+		if (err)
+			return err;
+
+		return 0;
 	}
 	case EXT4_IOC_SHUTDOWN:
 		return ext4_shutdown(sb, arg);
+
+#ifdef CONFIG_DDAR
+	case EXT4_IOC_GET_DD_POLICY:
+	case EXT4_IOC_SET_DD_POLICY:
+		return fscrypt_dd_ioctl(cmd, &arg, inode);
+#endif
+#ifdef CONFIG_FSCRYPT_SDP
+	case FS_IOC_GET_SDP_INFO:
+	case FS_IOC_SET_SDP_POLICY:
+	case FS_IOC_SET_SENSITIVE:
+	case FS_IOC_SET_PROTECTED:
+	case FS_IOC_ADD_CHAMBER:
+	case FS_IOC_REMOVE_CHAMBER:
+		return fscrypt_sdp_ioctl(filp, cmd, arg);
+#endif
+
 	default:
 		return -ENOTTY;
 	}
@@ -1129,6 +1133,14 @@ long ext4_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case EXT4_IOC_GET_ENCRYPTION_POLICY:
 	case EXT4_IOC_SHUTDOWN:
 	case FS_IOC_GETFSMAP:
+#ifdef CONFIG_FSCRYPT_SDP
+	case FS_IOC_GET_SDP_INFO:
+	case FS_IOC_SET_SDP_POLICY:
+	case FS_IOC_SET_SENSITIVE:
+	case FS_IOC_SET_PROTECTED:
+	case FS_IOC_ADD_CHAMBER:
+	case FS_IOC_REMOVE_CHAMBER:
+#endif
 		break;
 	default:
 		return -ENOIOCTLCMD;

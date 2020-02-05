@@ -37,10 +37,6 @@ static const struct usb_device_id usb_quirk_list[] = {
 	/* CBM - Flash disk */
 	{ USB_DEVICE(0x0204, 0x6025), .driver_info = USB_QUIRK_RESET_RESUME },
 
-	/* WORLDE Controller KS49 or Prodipe MIDI 49C USB controller */
-	{ USB_DEVICE(0x0218, 0x0201), .driver_info =
-			USB_QUIRK_CONFIG_INTF_STRINGS },
-
 	/* WORLDE easy key (easykey.25) MIDI controller  */
 	{ USB_DEVICE(0x0218, 0x0401), .driver_info =
 			USB_QUIRK_CONFIG_INTF_STRINGS },
@@ -243,9 +239,6 @@ static const struct usb_device_id usb_quirk_list[] = {
 	{ USB_DEVICE(0x1b1c, 0x1b20), .driver_info = USB_QUIRK_DELAY_INIT |
 	  USB_QUIRK_DELAY_CTRL_MSG },
 
-	/* Corsair K70 LUX RGB */
-	{ USB_DEVICE(0x1b1c, 0x1b33), .driver_info = USB_QUIRK_DELAY_INIT },
-
 	/* Corsair K70 LUX */
 	{ USB_DEVICE(0x1b1c, 0x1b36), .driver_info = USB_QUIRK_DELAY_INIT },
 
@@ -265,14 +258,6 @@ static const struct usb_device_id usb_quirk_list[] = {
 	/* Hauppauge HVR-950q */
 	{ USB_DEVICE(0x2040, 0x7200), .driver_info =
 			USB_QUIRK_CONFIG_INTF_STRINGS },
-
-	/* Raydium Touchscreen */
-	{ USB_DEVICE(0x2386, 0x3114), .driver_info = USB_QUIRK_NO_LPM },
-
-	{ USB_DEVICE(0x2386, 0x3119), .driver_info = USB_QUIRK_NO_LPM },
-
-	/* DJI CineSSD */
-	{ USB_DEVICE(0x2ca3, 0x0031), .driver_info = USB_QUIRK_NO_LPM },
 
 	/* INTEL VALUE SSD */
 	{ USB_DEVICE(0x8086, 0xf1a5), .driver_info = USB_QUIRK_RESET_RESUME },
@@ -402,3 +387,31 @@ void usb_detect_interface_quirks(struct usb_device *udev)
 		quirks);
 	udev->quirks |= quirks;
 }
+
+#ifdef CONFIG_USB_INTERFACE_LPM_LIST
+static const struct usb_device_id usb_interface_list_lpm[] = {
+	{ .match_flags = USB_DEVICE_ID_MATCH_INT_CLASS,
+		.bInterfaceClass = USB_CLASS_AUDIO},
+	{ }						/* Terminating entry */
+};
+
+int usb_detect_interface_lpm(struct usb_device *udev)
+{
+	const struct usb_device_id *id = usb_interface_list_lpm;
+	int l1_enable = 0;
+	
+	for (; id->match_flags; id++) {
+		if (!usb_match_device(udev, id))
+			continue;
+
+		if ((id->match_flags & USB_DEVICE_ID_MATCH_INT_INFO) &&
+		    !usb_match_any_interface(udev, id))
+			continue;
+
+		l1_enable = 1;
+		break;
+	}
+
+	return l1_enable;
+}
+#endif

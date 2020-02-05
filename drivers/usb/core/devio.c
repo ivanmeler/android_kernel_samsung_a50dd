@@ -1451,13 +1451,10 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 	struct async *as = NULL;
 	struct usb_ctrlrequest *dr = NULL;
 	unsigned int u, totlen, isofrmlen;
-	int i, ret, num_sgs = 0, ifnum = -1;
+	int i, ret, is_in, num_sgs = 0, ifnum = -1;
 	int number_of_packets = 0;
 	unsigned int stream_id = 0;
 	void *buf;
-	bool is_in;
-	bool allow_short = false;
-	bool allow_zero = false;
 	unsigned long mask =	USBDEVFS_URB_SHORT_NOT_OK |
 				USBDEVFS_URB_BULK_CONTINUATION |
 				USBDEVFS_URB_NO_FSBR |
@@ -1520,8 +1517,6 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 			is_in = 0;
 			uurb->endpoint &= ~USB_DIR_IN;
 		}
-		if (is_in)
-			allow_short = true;
 		snoop(&ps->dev->dev, "control urb: bRequestType=%02x "
 			"bRequest=%02x wValue=%04x "
 			"wIndex=%04x wLength=%04x\n",
@@ -1533,10 +1528,6 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 		break;
 
 	case USBDEVFS_URB_TYPE_BULK:
-		if (!is_in)
-			allow_zero = true;
-		else
-			allow_short = true;
 		switch (usb_endpoint_type(&ep->desc)) {
 		case USB_ENDPOINT_XFER_CONTROL:
 		case USB_ENDPOINT_XFER_ISOC:
@@ -1557,10 +1548,6 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 		if (!usb_endpoint_xfer_int(&ep->desc))
 			return -EINVAL;
  interrupt_urb:
-		if (!is_in)
-			allow_zero = true;
-		else
-			allow_short = true;
 		break;
 
 	case USBDEVFS_URB_TYPE_ISO:
@@ -1705,20 +1692,15 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 	u = (is_in ? URB_DIR_IN : URB_DIR_OUT);
 	if (uurb->flags & USBDEVFS_URB_ISO_ASAP)
 		u |= URB_ISO_ASAP;
-	if (allow_short && uurb->flags & USBDEVFS_URB_SHORT_NOT_OK)
+	if (uurb->flags & USBDEVFS_URB_SHORT_NOT_OK && is_in)
 		u |= URB_SHORT_NOT_OK;
 	if (uurb->flags & USBDEVFS_URB_NO_FSBR)
 		u |= URB_NO_FSBR;
-	if (allow_zero && uurb->flags & USBDEVFS_URB_ZERO_PACKET)
+	if (uurb->flags & USBDEVFS_URB_ZERO_PACKET)
 		u |= URB_ZERO_PACKET;
 	if (uurb->flags & USBDEVFS_URB_NO_INTERRUPT)
 		u |= URB_NO_INTERRUPT;
 	as->urb->transfer_flags = u;
-
-	if (!allow_short && uurb->flags & USBDEVFS_URB_SHORT_NOT_OK)
-		dev_warn(&ps->dev->dev, "Requested nonsensical USBDEVFS_URB_SHORT_NOT_OK.\n");
-	if (!allow_zero && uurb->flags & USBDEVFS_URB_ZERO_PACKET)
-		dev_warn(&ps->dev->dev, "Requested nonsensical USBDEVFS_URB_ZERO_PACKET.\n");
 
 	as->urb->transfer_buffer_length = uurb->buffer_length;
 	as->urb->setup_packet = (unsigned char *)dr;
@@ -2580,13 +2562,94 @@ static long usbdev_do_ioctl(struct file *file, unsigned int cmd,
 	return ret;
 }
 
+#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
+static int usbdev_log(unsigned int cmd, int ret)
+{
+	char *cmd_string;
+
+	switch (cmd) {
+	case USBDEVFS_CONTROL:
+		cmd_string = "CONTROL";
+		break;
+	case USBDEVFS_BULK:
+		cmd_string = "BULK";
+		break;
+	case USBDEVFS_RESETEP:
+		cmd_string = "RESETEP";
+		break;
+	case USBDEVFS_RESET:
+		cmd_string = "RESET";
+		break;
+	case USBDEVFS_CLEAR_HALT:
+		cmd_string = "CLEAR_HALT";
+		break;
+	case USBDEVFS_GETDRIVER:
+		cmd_string = "GETDRIVER";
+		break;
+	case USBDEVFS_CONNECTINFO:
+		cmd_string = "CONNECTINFO";
+		break;
+	case USBDEVFS_SETINTERFACE:
+		cmd_string = "SETINTERFACE";
+		break;
+	case USBDEVFS_SETCONFIGURATION:
+		cmd_string = "SETCONFIGURATION";
+		break;
+	case USBDEVFS_SUBMITURB:
+		cmd_string = "SUBMITURB";
+		break;
+	case USBDEVFS_DISCARDURB:
+		cmd_string = "DISCARDURB";
+		break;
+	case USBDEVFS_REAPURB:
+		cmd_string = "REAPURB";
+		break;
+	case USBDEVFS_REAPURBNDELAY:
+		cmd_string = "REAPURBNDELAY";
+		break;
+	case USBDEVFS_DISCSIGNAL:
+		cmd_string = "DISCSIGNAL";
+		break;
+	case USBDEVFS_CLAIMINTERFACE:
+		cmd_string = "CLAIMINTERFACE";
+		break;
+	case USBDEVFS_RELEASEINTERFACE:
+		cmd_string = "RELEASEINTERFACE";
+		break;
+	case USBDEVFS_IOCTL:
+		cmd_string = "IOCTL";
+		break;
+	case USBDEVFS_CLAIM_PORT:
+		cmd_string = "CLAIM_PORT";
+		break;
+	case USBDEVFS_RELEASE_PORT:
+		cmd_string = "RELEASE_PORT";
+		break;
+	case USBDEVFS_GET_CAPABILITIES:
+		cmd_string = "GET_CAPABILITIES";
+		break;
+	case USBDEVFS_DISCONNECT_CLAIM:
+		cmd_string = "DISCONNECT_CLAIM";
+		break;
+	default:
+		cmd_string = "DEFAULT";
+		break;
+	}
+	pr_err("%s: %s error ret=%d\n", __func__, cmd_string, ret);
+	return 0;
+}
+#endif
+
 static long usbdev_ioctl(struct file *file, unsigned int cmd,
 			unsigned long arg)
 {
 	int ret;
 
 	ret = usbdev_do_ioctl(file, cmd, (void __user *)arg);
-
+#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
+	if (ret < 0)
+		usbdev_log(cmd, ret);
+#endif
 	return ret;
 }
 

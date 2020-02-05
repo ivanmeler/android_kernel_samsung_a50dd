@@ -29,6 +29,8 @@
 #include <linux/kernel.h>
 #include <linux/usb/hcd.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
+#include <linux/wakelock.h>
+#include <linux/phy/phy.h>
 
 /* Code sharing between pci-quirks and xhci hcd */
 #include	"xhci-ext-caps.h"
@@ -1684,7 +1686,7 @@ struct xhci_bus_state {
  * It can take up to 20 ms to transition from RExit to U0 on the
  * Intel Lynx Point LP xHCI host.
  */
-#define	XHCI_MAX_REXIT_TIMEOUT_MS	20
+#define	XHCI_MAX_REXIT_TIMEOUT	(20 * 1000)
 
 static inline unsigned int hcd_index(struct usb_hcd *hcd)
 {
@@ -1702,6 +1704,13 @@ struct xhci_hub {
 	u8	psi_uid_count;
 };
 
+/*
+ * Sometimes deadlock occurred between hub_event and remove_hcd.
+ * In order to prevent it, waiting for completion of hub_event was added.
+ * This is a timeout (300msec) value for the waiting.
+ */
+#define XHCI_HUB_EVENT_TIMEOUT	(300)
+
 /* There is one xhci_hcd structure per controller */
 struct xhci_hcd {
 	struct usb_hcd *main_hcd;
@@ -1713,6 +1722,9 @@ struct xhci_hcd {
 	struct xhci_doorbell_array __iomem *dba;
 	/* Our HCD's current interrupter register set */
 	struct	xhci_intr_reg __iomem *ir_set;
+#ifdef CONFIG_SND_EXYNOS_USB_AUDIO
+	struct	xhci_intr_reg __iomem *ir_set_audio;
+#endif
 
 	/* Cached register copies of read-only HC data */
 	__u32		hcs_params1;
@@ -1753,6 +1765,18 @@ struct xhci_hcd {
 	struct xhci_command	*current_cmd;
 	struct xhci_ring	*event_ring;
 	struct xhci_erst	erst;
+
+#ifdef CONFIG_SND_EXYNOS_USB_AUDIO
+	struct xhci_ring	*event_ring_audio;
+	struct xhci_erst	erst_audio;
+	dma_addr_t save_dma;
+	void *save_addr;
+	dma_addr_t out_dma;
+	void *out_addr;
+	dma_addr_t in_dma;
+	void *in_addr;
+#endif
+
 	/* Scratchpad */
 	struct xhci_scratchpad  *scratchpad;
 	/* Store LPM test failed devices' information */
@@ -1774,6 +1798,9 @@ struct xhci_hcd {
 	struct dma_pool	*small_streams_pool;
 	struct dma_pool	*medium_streams_pool;
 
+	struct wake_lock *wakelock;
+	int			l2_state;
+
 	/* Host controller watchdog timer structures */
 	unsigned int		xhc_state;
 
@@ -1794,12 +1821,12 @@ struct xhci_hcd {
 #define XHCI_STATE_DYING	(1 << 0)
 #define XHCI_STATE_HALTED	(1 << 1)
 #define XHCI_STATE_REMOVING	(1 << 2)
-	unsigned long long	quirks;
-#define	XHCI_LINK_TRB_QUIRK	BIT_ULL(0)
-#define XHCI_RESET_EP_QUIRK	BIT_ULL(1)
-#define XHCI_NEC_HOST		BIT_ULL(2)
-#define XHCI_AMD_PLL_FIX	BIT_ULL(3)
-#define XHCI_SPURIOUS_SUCCESS	BIT_ULL(4)
+	unsigned int		quirks;
+#define	XHCI_LINK_TRB_QUIRK	(1 << 0)
+#define XHCI_RESET_EP_QUIRK	(1 << 1)
+#define XHCI_NEC_HOST		(1 << 2)
+#define XHCI_AMD_PLL_FIX	(1 << 3)
+#define XHCI_SPURIOUS_SUCCESS	(1 << 4)
 /*
  * Certain Intel host controllers have a limit to the number of endpoint
  * contexts they can handle.  Ideally, they would signal that they can't handle
@@ -1809,36 +1836,34 @@ struct xhci_hcd {
  * commands, reset device commands, disable slot commands, and address device
  * commands.
  */
-#define XHCI_EP_LIMIT_QUIRK	BIT_ULL(5)
-#define XHCI_BROKEN_MSI		BIT_ULL(6)
-#define XHCI_RESET_ON_RESUME	BIT_ULL(7)
-#define	XHCI_SW_BW_CHECKING	BIT_ULL(8)
-#define XHCI_AMD_0x96_HOST	BIT_ULL(9)
-#define XHCI_TRUST_TX_LENGTH	BIT_ULL(10)
-#define XHCI_LPM_SUPPORT	BIT_ULL(11)
-#define XHCI_INTEL_HOST		BIT_ULL(12)
-#define XHCI_SPURIOUS_REBOOT	BIT_ULL(13)
-#define XHCI_COMP_MODE_QUIRK	BIT_ULL(14)
-#define XHCI_AVOID_BEI		BIT_ULL(15)
-#define XHCI_PLAT		BIT_ULL(16)
-#define XHCI_SLOW_SUSPEND	BIT_ULL(17)
-#define XHCI_SPURIOUS_WAKEUP	BIT_ULL(18)
+#define XHCI_EP_LIMIT_QUIRK	(1 << 5)
+#define XHCI_BROKEN_MSI		(1 << 6)
+#define XHCI_RESET_ON_RESUME	(1 << 7)
+#define	XHCI_SW_BW_CHECKING	(1 << 8)
+#define XHCI_AMD_0x96_HOST	(1 << 9)
+#define XHCI_TRUST_TX_LENGTH	(1 << 10)
+#define XHCI_LPM_SUPPORT	(1 << 11)
+#define XHCI_INTEL_HOST		(1 << 12)
+#define XHCI_SPURIOUS_REBOOT	(1 << 13)
+#define XHCI_COMP_MODE_QUIRK	(1 << 14)
+#define XHCI_AVOID_BEI		(1 << 15)
+#define XHCI_PLAT		(1 << 16)
+#define XHCI_SLOW_SUSPEND	(1 << 17)
+#define XHCI_SPURIOUS_WAKEUP	(1 << 18)
 /* For controllers with a broken beyond repair streams implementation */
-#define XHCI_BROKEN_STREAMS	BIT_ULL(19)
-#define XHCI_PME_STUCK_QUIRK	BIT_ULL(20)
-#define XHCI_MTK_HOST		BIT_ULL(21)
-#define XHCI_SSIC_PORT_UNUSED	BIT_ULL(22)
-#define XHCI_NO_64BIT_SUPPORT	BIT_ULL(23)
-#define XHCI_MISSING_CAS	BIT_ULL(24)
+#define XHCI_BROKEN_STREAMS	(1 << 19)
+#define XHCI_PME_STUCK_QUIRK	(1 << 20)
+#define XHCI_MTK_HOST		(1 << 21)
+#define XHCI_SSIC_PORT_UNUSED	(1 << 22)
+#define XHCI_NO_64BIT_SUPPORT	(1 << 23)
+#define XHCI_MISSING_CAS	(1 << 24)
 /* For controller with a broken Port Disable implementation */
-#define XHCI_BROKEN_PORT_PED	BIT_ULL(25)
-#define XHCI_LIMIT_ENDPOINT_INTERVAL_7	BIT_ULL(26)
-#define XHCI_U2_DISABLE_WAKE	BIT_ULL(27)
-#define XHCI_ASMEDIA_MODIFY_FLOWCONTROL	BIT_ULL(28)
-#define XHCI_HW_LPM_DISABLE	BIT_ULL(29)
-#define XHCI_SUSPEND_DELAY	BIT_ULL(30)
-#define XHCI_INTEL_USB_ROLE_SW	BIT_ULL(31)
-#define XHCI_RESET_PLL_ON_DISCONNECT	BIT_ULL(34)
+#define XHCI_BROKEN_PORT_PED	(1 << 25)
+#define XHCI_LIMIT_ENDPOINT_INTERVAL_7	(1 << 26)
+#define XHCI_U2_DISABLE_WAKE	(1 << 27)
+#define XHCI_ASMEDIA_MODIFY_FLOWCONTROL	(1 << 28)
+#define XHCI_L2_SUPPORT	(1 << 29)
+#define XHCI_SUSPEND_DELAY	(1 << 30)
 
 	unsigned int		num_active_eps;
 	unsigned int		limit_active_eps;
@@ -2029,6 +2054,9 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated);
 irqreturn_t xhci_irq(struct usb_hcd *hcd);
 irqreturn_t xhci_msi_irq(int irq, void *hcd);
 int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev);
+int xhci_store_hw_info(struct usb_hcd *hcd, struct usb_device *udev);
+int xhci_set_deq(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx,
+		unsigned int last_ep, struct usb_device *udev);
 int xhci_alloc_tt_info(struct xhci_hcd *xhci,
 		struct xhci_virt_device *virt_dev,
 		struct usb_device *hdev,
@@ -2093,6 +2121,8 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue, u16 wIndex,
 int xhci_hub_status_data(struct usb_hcd *hcd, char *buf);
 int xhci_find_raw_port_number(struct usb_hcd *hcd, int port1);
 void xhci_hc_died(struct xhci_hcd *xhci);
+int xhci_hub_check_speed(struct usb_hcd *hcd);
+int xhci_check_usbl2_support(struct usb_hcd *hcd);
 
 #ifdef CONFIG_PM
 int xhci_bus_suspend(struct usb_hcd *hcd);

@@ -1237,10 +1237,15 @@ static void __spi_pump_messages(struct spi_controller *ctlr, bool in_kthread)
 		ret = ctlr->prepare_transfer_hardware(ctlr);
 		if (ret) {
 			dev_err(&ctlr->dev,
-				"failed to prepare transfer hardware\n");
+				"failed to prepare transfer hardware: %d\n",
+				ret);
 
 			if (ctlr->auto_runtime_pm)
 				pm_runtime_put(ctlr->dev.parent);
+
+			ctlr->cur_msg->status = ret;
+			spi_finalize_current_message(ctlr);
+
 			mutex_unlock(&ctlr->io_mutex);
 			return;
 		}
@@ -1267,7 +1272,10 @@ static void __spi_pump_messages(struct spi_controller *ctlr, bool in_kthread)
 		goto out;
 	}
 
+	dbg_snapshot_spi(ctlr, ctlr->cur_msg, DSS_FLAG_IN);
 	ret = ctlr->transfer_one_message(ctlr, ctlr->cur_msg);
+	dbg_snapshot_spi(ctlr, ctlr->cur_msg, DSS_FLAG_OUT);
+
 	if (ret) {
 		dev_err(&ctlr->dev,
 			"failed to transfer one message from queue\n");
@@ -2108,17 +2116,8 @@ int spi_register_controller(struct spi_controller *ctlr)
 	 */
 	if (ctlr->num_chipselect == 0)
 		return -EINVAL;
-	if (ctlr->bus_num >= 0) {
-		/* devices with a fixed bus num must check-in with the num */
-		mutex_lock(&board_lock);
-		id = idr_alloc(&spi_master_idr, ctlr, ctlr->bus_num,
-			ctlr->bus_num + 1, GFP_KERNEL);
-		mutex_unlock(&board_lock);
-		if (WARN(id < 0, "couldn't get idr"))
-			return id == -ENOSPC ? -EBUSY : id;
-		ctlr->bus_num = id;
-	} else if (ctlr->dev.of_node) {
-		/* allocate dynamic bus number using Linux idr */
+	/* allocate dynamic bus number using Linux idr */
+	if ((ctlr->bus_num < 0) && ctlr->dev.of_node) {
 		id = of_alias_get_id(ctlr->dev.of_node, "spi");
 		if (id >= 0) {
 			ctlr->bus_num = id;

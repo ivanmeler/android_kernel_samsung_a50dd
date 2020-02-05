@@ -629,33 +629,27 @@ EXPORT_SYMBOL(snd_interval_refine);
 
 static int snd_interval_refine_first(struct snd_interval *i)
 {
-	const unsigned int last_max = i->max;
-
 	if (snd_BUG_ON(snd_interval_empty(i)))
 		return -EINVAL;
 	if (snd_interval_single(i))
 		return 0;
 	i->max = i->min;
-	if (i->openmin)
+	i->openmax = i->openmin;
+	if (i->openmax)
 		i->max++;
-	/* only exclude max value if also excluded before refine */
-	i->openmax = (i->openmax && i->max >= last_max);
 	return 1;
 }
 
 static int snd_interval_refine_last(struct snd_interval *i)
 {
-	const unsigned int last_min = i->min;
-
 	if (snd_BUG_ON(snd_interval_empty(i)))
 		return -EINVAL;
 	if (snd_interval_single(i))
 		return 0;
 	i->min = i->max;
-	if (i->openmax)
+	i->openmin = i->openmax;
+	if (i->openmin)
 		i->min--;
-	/* only exclude min value if also excluded before refine */
-	i->openmin = (i->openmin && i->min <= last_min);
 	return 1;
 }
 
@@ -1845,7 +1839,7 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 	if (runtime->no_period_wakeup)
 		wait_time = MAX_SCHEDULE_TIMEOUT;
 	else {
-		wait_time = 10;
+		wait_time = 1;
 		if (runtime->rate) {
 			long t = runtime->period_size * 2 / runtime->rate;
 			wait_time = max(t, wait_time);

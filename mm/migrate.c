@@ -274,9 +274,6 @@ static bool remove_migration_pte(struct page *page, struct vm_area_struct *vma,
 		if (vma->vm_flags & VM_LOCKED && !PageTransCompound(new))
 			mlock_vma_page(new);
 
-		if (PageTransHuge(page) && PageMlocked(page))
-			clear_page_mlock(page);
-
 		/* No need to invalidate - it was non-present before */
 		update_mmu_cache(vma, pvmw.address, pvmw.pte);
 	}
@@ -1408,6 +1405,17 @@ int migrate_pages(struct list_head *from, new_page_t get_new_page,
 				rc = unmap_and_move(get_new_page, put_new_page,
 						private, page, pass > 2, mode,
 						reason);
+
+			if ((reason == MR_CMA) && (rc != -EAGAIN) &&
+						(rc != MIGRATEPAGE_SUCCESS)) {
+				phys_addr_t pa = page_to_phys(page);
+
+				pr_err("%s failed(%d): PA%pa,mapcnt%d,cnt%d\n",
+					__func__, rc, &pa,
+					page_mapcount(page), page_count(page));
+
+				dump_page_owner(page);
+			}
 
 			switch(rc) {
 			case -ENOMEM:

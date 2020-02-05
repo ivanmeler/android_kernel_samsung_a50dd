@@ -386,6 +386,36 @@ static const struct dma_map_ops swiotlb_dma_ops = {
 	.mapping_error = __swiotlb_dma_mapping_error,
 };
 
+static void *arm_exynos_dma_mcode_alloc(struct device *dev, size_t size,
+	dma_addr_t *handle, gfp_t gfp, unsigned long attrs);
+static void arm_exynos_dma_mcode_free(struct device *dev, size_t size, void *cpu_addr,
+				  dma_addr_t handle, unsigned long attrs);
+
+struct dma_map_ops arm_exynos_dma_mcode_ops = {
+	.alloc			= arm_exynos_dma_mcode_alloc,
+	.free			= arm_exynos_dma_mcode_free,
+};
+EXPORT_SYMBOL(arm_exynos_dma_mcode_ops);
+
+static void *arm_exynos_dma_mcode_alloc(struct device *dev, size_t size,
+	dma_addr_t *handle, gfp_t gfp, unsigned long attrs)
+{
+	void *addr;
+
+	if (!*handle)
+		return NULL;
+
+	addr = ioremap(*handle, size);
+
+	return addr;
+}
+
+static void arm_exynos_dma_mcode_free(struct device *dev, size_t size, void *cpu_addr,
+				  dma_addr_t handle, unsigned long attrs)
+{
+	iounmap(cpu_addr);
+}
+
 static int __init atomic_pool_init(void)
 {
 	pgprot_t prot = __pgprot(PROT_NORMAL_NC);
@@ -629,14 +659,13 @@ static void *__iommu_alloc_attrs(struct device *dev, size_t size,
 						    size >> PAGE_SHIFT);
 			return NULL;
 		}
+		if (!coherent)
+			__dma_flush_area(page_to_virt(page), iosize);
+
 		addr = dma_common_contiguous_remap(page, size, VM_USERMAP,
 						   prot,
 						   __builtin_return_address(0));
-		if (addr) {
-			memset(addr, 0, size);
-			if (!coherent)
-				__dma_flush_area(page_to_virt(page), iosize);
-		} else {
+		if (!addr) {
 			iommu_dma_unmap_page(dev, *handle, iosize, 0, attrs);
 			dma_release_from_contiguous(dev, page,
 						    size >> PAGE_SHIFT);

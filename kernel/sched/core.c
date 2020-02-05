@@ -18,6 +18,7 @@
 #include <linux/rcupdate_wait.h>
 
 #include <linux/blkdev.h>
+#include <linux/cpufreq_times.h>
 #include <linux/kprobes.h>
 #include <linux/mmu_context.h>
 #include <linux/module.h>
@@ -26,12 +27,16 @@
 #include <linux/profile.h>
 #include <linux/security.h>
 #include <linux/syscalls.h>
+#include <linux/debug-snapshot.h>
+#include <linux/ems.h>
 
 #include <asm/switch_to.h>
 #include <asm/tlb.h>
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
 #endif
+
+#include <linux/sec_debug.h>
 
 #include "sched.h"
 #include "../workqueue_internal.h"
@@ -2228,6 +2233,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #endif
 
 	INIT_LIST_HEAD(&p->se.group_node);
+#ifdef CONFIG_SCHED_EMS
+	rcu_assign_pointer(p->band, NULL);
+	INIT_LIST_HEAD(&p->band_members);
+#endif
 	walt_init_new_task_load(p);
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -2237,6 +2246,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #ifdef CONFIG_SCHEDSTATS
 	/* Even if schedstat is disabled, there should not be garbage */
 	memset(&p->se.statistics, 0, sizeof(p->se.statistics));
+#endif
+
+#ifdef CONFIG_CPU_FREQ_TIMES
+	cpufreq_task_times_init(p);
 #endif
 
 	RB_CLEAR_NODE(&p->dl.rb_node);
@@ -2441,6 +2454,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	}
 
 	init_entity_runnable_average(&p->se);
+	init_rt_entity_runnable_average(&p->rt);
 
 	/*
 	 * The child is not yet in the pid-hash so no cgroup attach races,
@@ -2505,6 +2519,8 @@ void wake_up_new_task(struct task_struct *p)
 	struct rq *rq;
 
 	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
+
+	newbie_join_band(p);
 
 	walt_init_new_task_load(p);
 
@@ -3097,6 +3113,8 @@ void scheduler_tick(void)
 	trigger_load_balance(rq);
 #endif
 	rq_last_tick_reset(rq);
+
+	update_band(curr, -1);
 }
 
 #ifdef CONFIG_NO_HZ_FULL
@@ -3223,7 +3241,7 @@ static noinline void __schedule_bug(struct task_struct *prev)
 	if (oops_in_progress)
 		return;
 
-	printk(KERN_ERR "BUG: scheduling while atomic: %s/%d/0x%08x\n",
+	pr_auto(ASL6, "BUG: scheduling while atomic: %s/%d/0x%08x\n",
 		prev->comm, prev->pid, preempt_count());
 
 	debug_show_held_locks(prev);
@@ -3240,6 +3258,9 @@ static noinline void __schedule_bug(struct task_struct *prev)
 		panic("scheduling while atomic\n");
 
 	dump_stack();
+#ifdef CONFIG_DEBUG_ATOMIC_SLEEP_PANIC
+	BUG();
+#endif
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 
@@ -3449,6 +3470,7 @@ static void __sched notrace __schedule(bool preempt)
 		rq_unlock_irq(rq, &rf);
 	}
 
+	dbg_snapshot_task(smp_processor_id(), rq->curr);
 	balance_callback(rq);
 }
 
@@ -3966,7 +3988,7 @@ int idle_cpu(int cpu)
 	if (rq->curr != rq->idle)
 		return 0;
 
-	if (rq->nr_running)
+	if (rq->nr_running == 1)
 		return 0;
 
 #ifdef CONFIG_SMP
@@ -5678,18 +5700,6 @@ int sched_cpu_activate(unsigned int cpu)
 	struct rq *rq = cpu_rq(cpu);
 	struct rq_flags rf;
 
-#ifdef CONFIG_SCHED_SMT
-	/*
-	 * The sched_smt_present static key needs to be evaluated on every
-	 * hotplug event because at boot time SMT might be disabled when
-	 * the number of booted CPUs is limited.
-	 *
-	 * If then later a sibling gets hotplugged, then the key would stay
-	 * off and SMT scheduling would never be functional.
-	 */
-	if (cpumask_weight(cpu_smt_mask(cpu)) > 1)
-		static_branch_enable_cpuslocked(&sched_smt_present);
-#endif
 	set_cpu_active(cpu, true);
 
 	if (sched_smp_initialized) {
@@ -5788,6 +5798,22 @@ int sched_cpu_dying(unsigned int cpu)
 }
 #endif
 
+#ifdef CONFIG_SCHED_SMT
+DEFINE_STATIC_KEY_FALSE(sched_smt_present);
+
+static void sched_init_smt(void)
+{
+	/*
+	 * We've enumerated all CPUs and will assume that if any CPU
+	 * has SMT siblings, CPU0 will too.
+	 */
+	if (cpumask_weight(cpu_smt_mask(0)) > 1)
+		static_branch_enable(&sched_smt_present);
+}
+#else
+static inline void sched_init_smt(void) { }
+#endif
+
 void __init sched_init_smp(void)
 {
 	cpumask_var_t non_isolated_cpus;
@@ -5799,17 +5825,14 @@ void __init sched_init_smp(void)
 	/*
 	 * There's no userspace yet to cause hotplug operations; hence all the
 	 * CPU masks are stable and all blatant races in the below code cannot
-	 * happen. The hotplug lock is nevertheless taken to satisfy lockdep,
-	 * but there won't be any contention on it.
+	 * happen.
 	 */
-	cpus_read_lock();
 	mutex_lock(&sched_domains_mutex);
 	sched_init_domains(cpu_active_mask);
 	cpumask_andnot(non_isolated_cpus, cpu_possible_mask, cpu_isolated_map);
 	if (cpumask_empty(non_isolated_cpus))
 		cpumask_set_cpu(smp_processor_id(), non_isolated_cpus);
 	mutex_unlock(&sched_domains_mutex);
-	cpus_read_unlock();
 
 	/* Move init over to a non-isolated CPU */
 	if (set_cpus_allowed_ptr(current, non_isolated_cpus) < 0)
@@ -5819,6 +5842,8 @@ void __init sched_init_smp(void)
 
 	init_sched_rt_class();
 	init_sched_dl_class();
+
+	sched_init_smt();
 
 	sched_smp_initialized = true;
 }
@@ -5863,6 +5888,11 @@ void __init sched_init(void)
 {
 	int i, j;
 	unsigned long alloc_size = 0, ptr;
+
+#ifdef CONFIG_SEC_DEBUG
+	sec_gaf_supply_rqinfo(offsetof(struct rq, curr),
+		offsetof(struct cfs_rq, rq));
+#endif
 
 	sched_clock_init();
 	wait_bit_init();
@@ -6006,6 +6036,8 @@ void __init sched_init(void)
 
 	set_load_weight(&init_task);
 
+	alloc_bands();
+
 	/*
 	 * The boot idle thread does lazy MMU switching as well:
 	 */
@@ -6085,7 +6117,7 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 	/* Save this before calling printk(), since that will clobber it: */
 	preempt_disable_ip = get_preempt_disable_ip(current);
 
-	printk(KERN_ERR
+	pr_auto(ASL6,
 		"BUG: sleeping function called from invalid context at %s:%d\n",
 			file, line);
 	printk(KERN_ERR
@@ -6106,6 +6138,9 @@ void ___might_sleep(const char *file, int line, int preempt_offset)
 		pr_cont("\n");
 	}
 	dump_stack();
+#ifdef CONFIG_DEBUG_ATOMIC_SLEEP_PANIC
+	BUG();
+#endif
 	add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
 }
 EXPORT_SYMBOL(___might_sleep);
@@ -6290,7 +6325,7 @@ static void sched_change_group(struct task_struct *tsk, int type)
 	tg = autogroup_task_group(tsk, tg);
 	tsk->sched_task_group = tg;
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
 	if (tsk->sched_class->task_change_group)
 		tsk->sched_class->task_change_group(tsk, type);
 	else
@@ -6830,4 +6865,21 @@ const u32 sched_prio_to_wmult[40] = {
  /*   5 */  12820798,  15790321,  19976592,  24970740,  31350126,
  /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
  /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
+};
+
+/*
+ * RT Extension for 'prio_to_weight'
+ */
+const int rtprio_to_weight[51] = {
+ /* 0 */     17222521, 15500269, 13950242, 12555218, 11299696,
+ /* 10 */    10169726,  9152754,  8237478,  7413730,  6672357,
+ /* 20 */     6005122,  5404609,  4864149,  4377734,  3939960,
+ /* 30 */     3545964,  3191368,  2872231,  2585008,  2326507,
+ /* 40 */     2093856,  1884471,  1696024,  1526421,  1373779,
+ /* 50 */     1236401,  1112761,  1001485,   901337,   811203,
+ /* 60 */      730083,   657074,   591367,   532230,   479007,
+ /* 70 */      431106,   387996,   349196,   314277,   282849,
+ /* 80 */      254564,   229108,   206197,   185577,   167019,
+ /* 90 */      150318,   135286,   121757,   109581,    98623,
+ /* 100 for Fair class */				88761,
 };

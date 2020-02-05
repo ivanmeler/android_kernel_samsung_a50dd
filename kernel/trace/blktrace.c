@@ -1809,10 +1809,6 @@ static ssize_t sysfs_blk_trace_attr_store(struct device *dev,
 	mutex_lock(&q->blk_trace_mutex);
 
 	if (attr == &dev_attr_enable) {
-		if (!!value == !!q->blk_trace) {
-			ret = 0;
-			goto out_unlock_bdev;
-		}
 		if (value)
 			ret = blk_trace_setup_queue(q, bdev);
 		else
@@ -1856,6 +1852,7 @@ void blk_trace_remove_sysfs(struct device *dev)
 #endif /* CONFIG_BLK_DEV_IO_TRACE */
 
 #ifdef CONFIG_EVENT_TRACING
+SIO_PATCH_VERSION(ftrace_discard_bugfix, 1, 0, "");
 
 void blk_fill_rwbs(char *rwbs, unsigned int op, int bytes)
 {
@@ -1865,16 +1862,16 @@ void blk_fill_rwbs(char *rwbs, unsigned int op, int bytes)
 		rwbs[i++] = 'F';
 
 	switch (op & REQ_OP_MASK) {
-	case REQ_OP_WRITE:
-	case REQ_OP_WRITE_SAME:
-		rwbs[i++] = 'W';
-		break;
 	case REQ_OP_DISCARD:
 		rwbs[i++] = 'D';
 		break;
 	case REQ_OP_SECURE_ERASE:
 		rwbs[i++] = 'D';
 		rwbs[i++] = 'E';
+		break;
+	case REQ_OP_WRITE:
+	case REQ_OP_WRITE_SAME:
+		rwbs[i++] = 'W';
 		break;
 	case REQ_OP_FLUSH:
 		rwbs[i++] = 'F';

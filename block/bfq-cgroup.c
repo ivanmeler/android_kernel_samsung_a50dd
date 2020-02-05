@@ -224,9 +224,9 @@ static void bfqg_and_blkg_get(struct bfq_group *bfqg)
 
 void bfqg_and_blkg_put(struct bfq_group *bfqg)
 {
-	blkg_put(bfqg_to_blkg(bfqg));
-
 	bfqg_put(bfqg);
+
+	blkg_put(bfqg_to_blkg(bfqg));
 }
 
 void bfqg_stats_update_io_add(struct bfq_group *bfqg, struct bfq_queue *bfqq,
@@ -887,8 +887,7 @@ static ssize_t bfq_io_set_weight(struct kernfs_open_file *of,
 	if (ret)
 		return ret;
 
-	ret = bfq_io_set_weight_legacy(of_css(of), NULL, weight);
-	return ret ?: nbytes;
+	return bfq_io_set_weight_legacy(of_css(of), NULL, weight);
 }
 
 static int bfqg_print_stat(struct seq_file *sf, void *v)

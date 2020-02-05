@@ -201,9 +201,8 @@ void qed_ll2b_complete_rx_packet(void *cxt, struct qed_ll2_comp_rx_data *data)
 
 	skb = build_skb(buffer->data, 0);
 	if (!skb) {
-		DP_INFO(cdev, "Failed to build SKB\n");
-		kfree(buffer->data);
-		goto out_post1;
+		rc = -ENOMEM;
+		goto out_post;
 	}
 
 	data->u.placement_offset += NET_SKB_PAD;
@@ -225,14 +224,8 @@ void qed_ll2b_complete_rx_packet(void *cxt, struct qed_ll2_comp_rx_data *data)
 		cdev->ll2->cbs->rx_cb(cdev->ll2->cb_cookie, skb,
 				      data->opaque_data_0,
 				      data->opaque_data_1);
-	} else {
-		DP_VERBOSE(p_hwfn, (NETIF_MSG_RX_STATUS | NETIF_MSG_PKTDATA |
-				    QED_MSG_LL2 | QED_MSG_STORAGE),
-			   "Dropping the packet\n");
-		kfree(buffer->data);
 	}
 
-out_post1:
 	/* Update Buffer information and update FW producer */
 	buffer->data = new_data;
 	buffer->phys_addr = new_phys_addr;

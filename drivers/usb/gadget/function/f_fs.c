@@ -34,6 +34,7 @@
 #include <linux/mmu_context.h>
 #include <linux/poll.h>
 #include <linux/eventfd.h>
+#include <linux/delay.h>
 
 #include "u_fs.h"
 #include "u_f.h"
@@ -219,7 +220,6 @@ struct ffs_io_data {
 
 	struct mm_struct *mm;
 	struct work_struct work;
-	struct work_struct cancellation_work;
 
 	struct usb_ep *ep;
 	struct usb_request *req;
@@ -1015,9 +1015,16 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 		if (interrupted)
 			ret = -EINTR;
-		else if (io_data->read && ep->status > 0)
+		else if (io_data->read && ep->status > 0) {
+			if (ep->status > 0xFFFFFF) {
+				pr_info("%s abnormal size=%d\n",
+						__func__, (int)ep->status);
+				ret = -ENOMEM;
+				goto error_mutex;
+			}
 			ret = __ffs_epfile_read_data(epfile, data, ep->status,
 						     &io_data->data);
+		}
 		else
 			ret = ep->status;
 		goto error_mutex;
@@ -1074,31 +1081,22 @@ ffs_epfile_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static void ffs_aio_cancel_worker(struct work_struct *work)
-{
-	struct ffs_io_data *io_data = container_of(work, struct ffs_io_data,
-						   cancellation_work);
-
-	ENTER();
-
-	usb_ep_dequeue(io_data->ep, io_data->req);
-}
-
 static int ffs_aio_cancel(struct kiocb *kiocb)
 {
 	struct ffs_io_data *io_data = kiocb->private;
-	struct ffs_data *ffs = io_data->ffs;
+	struct ffs_epfile *epfile = kiocb->ki_filp->private_data;
 	int value;
 
 	ENTER();
 
-	if (likely(io_data && io_data->ep && io_data->req)) {
-		INIT_WORK(&io_data->cancellation_work, ffs_aio_cancel_worker);
-		queue_work(ffs->io_completion_wq, &io_data->cancellation_work);
-		value = -EINPROGRESS;
-	} else {
+	spin_lock_irq(&epfile->ffs->eps_lock);
+
+	if (likely(io_data && io_data->ep && io_data->req))
+		value = usb_ep_dequeue(io_data->ep, io_data->req);
+	else
 		value = -EINVAL;
-	}
+
+	spin_unlock_irq(&epfile->ffs->eps_lock);
 
 	return value;
 }
@@ -2922,6 +2920,7 @@ static inline struct f_fs_opts *ffs_do_functionfs_bind(struct usb_function *f,
 	struct f_fs_opts *ffs_opts =
 		container_of(f->fi, struct f_fs_opts, func_inst);
 	int ret;
+	int retries = 500;
 
 	ENTER();
 
@@ -2932,12 +2931,21 @@ static inline struct f_fs_opts *ffs_do_functionfs_bind(struct usb_function *f,
 	 *
 	 * Configfs-enabled gadgets however do need ffs_dev_lock.
 	 */
-	if (!ffs_opts->no_configfs)
-		ffs_dev_lock();
-	ret = ffs_opts->dev->desc_ready ? 0 : -ENODEV;
-	func->ffs = ffs_opts->dev->ffs_data;
-	if (!ffs_opts->no_configfs)
-		ffs_dev_unlock();
+	do {
+		if (!ffs_opts->no_configfs)
+			ffs_dev_lock();
+		ret = ffs_opts->dev->desc_ready ? 0 : -ENODEV;
+		func->ffs = ffs_opts->dev->ffs_data;
+		if (!ffs_opts->no_configfs)
+			ffs_dev_unlock();
+		if (ret)
+			msleep(20);
+		else
+			break;
+	} while (--retries);
+
+	pr_info("ffs_do_functionfs_bind %d %d\n", ret, retries);
+
 	if (ret)
 		return ERR_PTR(ret);
 
@@ -3491,7 +3499,7 @@ static struct usb_function *ffs_alloc(struct usb_function_instance *fi)
 	if (unlikely(!func))
 		return ERR_PTR(-ENOMEM);
 
-	func->function.name    = "Function FS Gadget";
+	func->function.name    = "adb";
 
 	func->function.bind    = ffs_func_bind;
 	func->function.unbind  = ffs_func_unbind;

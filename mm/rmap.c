@@ -1358,21 +1358,11 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 	}
 
 	/*
-	 * For THP, we have to assume the worse case ie pmd for invalidation.
-	 * For hugetlb, it could be much worse if we need to do pud
-	 * invalidation in the case of pmd sharing.
-	 *
-	 * Note that the page can not be free in this function as call of
-	 * try_to_unmap() must hold a reference on the page.
+	 * We have to assume the worse case ie pmd for invalidation. Note that
+	 * the page can not be free in this function as call of try_to_unmap()
+	 * must hold a reference on the page.
 	 */
 	end = min(vma->vm_end, start + (PAGE_SIZE << compound_order(page)));
-	if (PageHuge(page)) {
-		/*
-		 * If sharing is possible, start and end will be adjusted
-		 * accordingly.
-		 */
-		adjust_range_if_pmd_sharing_possible(vma, &start, &end);
-	}
 	mmu_notifier_invalidate_range_start(vma->vm_mm, start, end);
 
 	while (page_vma_mapped_walk(&pvmw)) {
@@ -1418,32 +1408,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 		subpage = page - page_to_pfn(page) + pte_pfn(*pvmw.pte);
 		address = pvmw.address;
 
-		if (PageHuge(page)) {
-			if (huge_pmd_unshare(mm, &address, pvmw.pte)) {
-				/*
-				 * huge_pmd_unshare unmapped an entire PMD
-				 * page.  There is no way of knowing exactly
-				 * which PMDs may be cached for this mm, so
-				 * we must flush them all.  start/end were
-				 * already adjusted above to cover this range.
-				 */
-				flush_cache_range(vma, start, end);
-				flush_tlb_range(vma, start, end);
-				mmu_notifier_invalidate_range(mm, start, end);
-
-				/*
-				 * The ref count of the PMD page was dropped
-				 * which is part of the way map counting
-				 * is done for shared PMDs.  Return 'true'
-				 * here.  When there is no other sharing,
-				 * huge_pmd_unshare returns false and we will
-				 * unmap the actual page and drop map count
-				 * to zero.
-				 */
-				page_vma_mapped_walk_done(&pvmw);
-				break;
-			}
-		}
+#ifdef CONFIG_RKP_DMAP_PROT
+		dmap_prot((u64)page_to_phys(page),(u64)compound_order(page),0);
+#endif
 
 		if (IS_ENABLED(CONFIG_MIGRATION) &&
 		    (flags & TTU_MIGRATION) &&
@@ -1462,6 +1429,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			swp_pte = swp_entry_to_pte(entry);
 			if (pte_soft_dirty(pteval))
 				swp_pte = pte_swp_mksoft_dirty(swp_pte);
+#ifdef CONFIG_RKP_DMAP_PROT
+			dmap_prot((u64)pte_val(swp_pte),0,0);
+#endif
 			set_pte_at(mm, pvmw.address, pvmw.pte, swp_pte);
 			goto discard;
 		}
@@ -1474,7 +1444,6 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 				break;
 			}
 		}
-
 		/* Nuke the page table entry. */
 		flush_cache_page(vma, address, pte_pfn(*pvmw.pte));
 		if (should_defer_flush(mm, flags)) {
@@ -1510,6 +1479,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 						     vma_mmu_pagesize(vma));
 			} else {
 				dec_mm_counter(mm, mm_counter(page));
+#ifdef CONFIG_RKP_DMAP_PROT
+				dmap_prot((u64)pte_val(pteval),0,0);
+#endif
 				set_pte_at(mm, address, pvmw.pte, pteval);
 			}
 
@@ -1539,6 +1511,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			swp_pte = swp_entry_to_pte(entry);
 			if (pte_soft_dirty(pteval))
 				swp_pte = pte_swp_mksoft_dirty(swp_pte);
+#ifdef CONFIG_RKP_DMAP_PROT
+			dmap_prot((u64)pte_val(swp_pte),0,0);
+#endif
 			set_pte_at(mm, address, pvmw.pte, swp_pte);
 		} else if (PageAnon(page)) {
 			swp_entry_t entry = { .val = page_private(subpage) };
@@ -1562,6 +1537,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 					goto discard;
 				}
 
+#ifdef CONFIG_RKP_DMAP_PROT
+				dmap_prot((u64)pte_val(pteval),0,0);
+#endif
 				/*
 				 * If the page was redirtied, it cannot be
 				 * discarded. Remap the page to page table.
@@ -1574,6 +1552,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			}
 
 			if (swap_duplicate(entry) < 0) {
+#ifdef CONFIG_RKP_DMAP_PROT
+				dmap_prot((u64)pte_val(pteval),0,0);
+#endif
 				set_pte_at(mm, address, pvmw.pte, pteval);
 				ret = false;
 				page_vma_mapped_walk_done(&pvmw);
@@ -1590,6 +1571,9 @@ static bool try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 			swp_pte = swp_entry_to_pte(entry);
 			if (pte_soft_dirty(pteval))
 				swp_pte = pte_swp_mksoft_dirty(swp_pte);
+#ifdef CONFIG_RKP_DMAP_PROT
+			dmap_prot((u64)pte_val(swp_pte),0,0);
+#endif
 			set_pte_at(mm, address, pvmw.pte, swp_pte);
 		} else
 			dec_mm_counter(mm, mm_counter_file(page));

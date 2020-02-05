@@ -349,7 +349,7 @@ static int pmu_aliases_parse(char *dir, struct list_head *head)
 		if (pmu_alias_info_file(name))
 			continue;
 
-		scnprintf(path, PATH_MAX, "%s/%s", dir, name);
+		snprintf(path, PATH_MAX, "%s/%s", dir, name);
 
 		file = fopen(path, "r");
 		if (!file) {
@@ -754,14 +754,13 @@ static void pmu_format_value(unsigned long *format, __u64 value, __u64 *v,
 
 static __u64 pmu_format_max_value(const unsigned long *format)
 {
-	int w;
+	__u64 w = 0;
+	int fbit;
 
-	w = bitmap_weight(format, PERF_PMU_FORMAT_BITS);
-	if (!w)
-		return 0;
-	if (w < 64)
-		return (1ULL << w) - 1;
-	return -1;
+	for_each_set_bit(fbit, format, PERF_PMU_FORMAT_BITS)
+		w |= (1ULL << fbit);
+
+	return w;
 }
 
 /*

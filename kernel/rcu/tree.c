@@ -58,6 +58,11 @@
 #include <linux/trace_events.h>
 #include <linux/suspend.h>
 #include <linux/ftrace.h>
+#include <linux/debug-snapshot.h>
+
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/sec_debug.h>
+#endif
 
 #include "tree.h"
 #include "rcu.h"
@@ -1458,7 +1463,9 @@ static void print_other_cpu_stall(struct rcu_state *rsp, unsigned long gpnum)
 	 * See Documentation/RCU/stallwarn.txt for info on how to debug
 	 * RCU CPU stall warnings.
 	 */
-	pr_err("INFO: %s detected stalls on CPUs/tasks:",
+
+	dbg_snapshot_printkl((size_t)rsp->name, (size_t)rsp);
+	pr_auto(ASL1, "INFO: %s detected stalls on CPUs/tasks:",
 	       rsp->name);
 	print_cpu_stall_info_begin();
 	rcu_for_each_leaf_node(rsp, rnp) {
@@ -1526,7 +1533,9 @@ static void print_cpu_stall(struct rcu_state *rsp)
 	 * See Documentation/RCU/stallwarn.txt for info on how to debug
 	 * RCU CPU stall warnings.
 	 */
-	pr_err("INFO: %s self-detected stall on CPU", rsp->name);
+
+	dbg_snapshot_printkl((size_t)rsp->name, (size_t)rsp);
+	pr_auto(ASL1, "INFO: %s self-detected stall on CPU", rsp->name);
 	print_cpu_stall_info_begin();
 	print_cpu_stall_info(rsp, smp_processor_id());
 	print_cpu_stall_info_end();
@@ -2772,15 +2781,6 @@ void rcu_check_callbacks(int user)
 		rcu_bh_qs();
 	}
 	rcu_preempt_check_callbacks();
-	/* The load-acquire pairs with the store-release setting to true. */
-	if (smp_load_acquire(this_cpu_ptr(&rcu_dynticks.rcu_urgent_qs))) {
-		/* Idle and userspace execution already are quiescent states. */
-		if (!rcu_is_cpu_rrupt_from_idle() && !user) {
-			set_tsk_need_resched(current);
-			set_preempt_need_resched();
-		}
-		__this_cpu_write(rcu_dynticks.rcu_urgent_qs, false);
-	}
 	if (rcu_pending())
 		invoke_rcu_core();
 	if (user)

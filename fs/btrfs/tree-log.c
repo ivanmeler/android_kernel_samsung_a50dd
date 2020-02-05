@@ -273,13 +273,6 @@ struct walk_control {
 	/* what stage of the replay code we're currently in */
 	int stage;
 
-	/*
-	 * Ignore any items from the inode currently being processed. Needs
-	 * to be set every time we find a BTRFS_INODE_ITEM_KEY and we are in
-	 * the LOG_WALK_REPLAY_INODES stage.
-	 */
-	bool ignore_cur_inode;
-
 	/* the root we are currently replaying */
 	struct btrfs_root *replay_dest;
 
@@ -2370,20 +2363,6 @@ static int replay_one_buffer(struct btrfs_root *log, struct extent_buffer *eb,
 
 			inode_item = btrfs_item_ptr(eb, i,
 					    struct btrfs_inode_item);
-			/*
-			 * If we have a tmpfile (O_TMPFILE) that got fsync'ed
-			 * and never got linked before the fsync, skip it, as
-			 * replaying it is pointless since it would be deleted
-			 * later. We skip logging tmpfiles, but it's always
-			 * possible we are replaying a log created with a kernel
-			 * that used to log tmpfiles.
-			 */
-			if (btrfs_inode_nlink(eb, inode_item) == 0) {
-				wc->ignore_cur_inode = true;
-				continue;
-			} else {
-				wc->ignore_cur_inode = false;
-			}
 			ret = replay_xattr_deletes(wc->trans, root, log,
 						   path, key.objectid);
 			if (ret)
@@ -2421,8 +2400,16 @@ static int replay_one_buffer(struct btrfs_root *log, struct extent_buffer *eb,
 					     root->fs_info->sectorsize);
 				ret = btrfs_drop_extents(wc->trans, root, inode,
 							 from, (u64)-1, 1);
+				/*
+				 * If the nlink count is zero here, the iput
+				 * will free the inode.  We bump it to make
+				 * sure it doesn't get freed until the link
+				 * count fixup is done.
+				 */
 				if (!ret) {
-					/* Update the inode's nbytes. */
+					if (inode->i_nlink == 0)
+						inc_nlink(inode);
+					/* Update link count and nbytes. */
 					ret = btrfs_update_inode(wc->trans,
 								 root, inode);
 				}
@@ -2436,9 +2423,6 @@ static int replay_one_buffer(struct btrfs_root *log, struct extent_buffer *eb,
 			if (ret)
 				break;
 		}
-
-		if (wc->ignore_cur_inode)
-			continue;
 
 		if (key.type == BTRFS_DIR_INDEX_KEY &&
 		    wc->stage == LOG_WALK_REPLAY_DIR_INDEX) {
@@ -3094,12 +3078,9 @@ static void free_log_tree(struct btrfs_trans_handle *trans,
 	};
 
 	ret = walk_log_tree(trans, log, &wc);
-	if (ret) {
-		if (trans)
-			btrfs_abort_transaction(trans, ret);
-		else
-			btrfs_handle_fs_error(log->fs_info, ret, NULL);
-	}
+	/* I don't think this can happen but just in case */
+	if (ret)
+		btrfs_abort_transaction(trans, ret);
 
 	while (1) {
 		ret = find_first_extent_bit(&log->dirty_log_pages,
@@ -3978,36 +3959,6 @@ fill_holes:
 			break;
 		*last_extent = extent_end;
 	}
-
-	/*
-	 * Check if there is a hole between the last extent found in our leaf
-	 * and the first extent in the next leaf. If there is one, we need to
-	 * log an explicit hole so that at replay time we can punch the hole.
-	 */
-	if (ret == 0 &&
-	    key.objectid == btrfs_ino(inode) &&
-	    key.type == BTRFS_EXTENT_DATA_KEY &&
-	    i == btrfs_header_nritems(src_path->nodes[0])) {
-		ret = btrfs_next_leaf(inode->root, src_path);
-		need_find_last_extent = true;
-		if (ret > 0) {
-			ret = 0;
-		} else if (ret == 0) {
-			btrfs_item_key_to_cpu(src_path->nodes[0], &key,
-					      src_path->slots[0]);
-			if (key.objectid == btrfs_ino(inode) &&
-			    key.type == BTRFS_EXTENT_DATA_KEY &&
-			    *last_extent < key.offset) {
-				const u64 len = key.offset - *last_extent;
-
-				ret = btrfs_insert_file_extent(trans, log,
-							       btrfs_ino(inode),
-							       *last_extent, 0,
-							       0, len, 0, len,
-							       0, 0, 0);
-			}
-		}
-	}
 	/*
 	 * Need to let the callers know we dropped the path so they should
 	 * re-search.
@@ -4392,6 +4343,7 @@ static int btrfs_log_changed_extents(struct btrfs_trans_handle *trans,
 
 	INIT_LIST_HEAD(&extents);
 
+	down_write(&inode->dio_sem);
 	write_lock(&tree->lock);
 	test_gen = root->fs_info->last_trans_committed;
 	logged_start = start;
@@ -4472,6 +4424,7 @@ process:
 	}
 	WARN_ON(!list_empty(&extents));
 	write_unlock(&tree->lock);
+	up_write(&inode->dio_sem);
 
 	btrfs_release_path(path);
 	if (!ret)
@@ -4669,8 +4622,7 @@ static int btrfs_log_trailing_hole(struct btrfs_trans_handle *trans,
 			ASSERT(len == i_size ||
 			       (len == fs_info->sectorsize &&
 				btrfs_file_extent_compression(leaf, extent) !=
-				BTRFS_COMPRESS_NONE) ||
-			       (len < i_size && i_size < fs_info->sectorsize));
+				BTRFS_COMPRESS_NONE));
 			return 0;
 		}
 
@@ -5612,33 +5564,9 @@ static int btrfs_log_all_parents(struct btrfs_trans_handle *trans,
 
 			dir_inode = btrfs_iget(fs_info->sb, &inode_key,
 					       root, NULL);
-			/*
-			 * If the parent inode was deleted, return an error to
-			 * fallback to a transaction commit. This is to prevent
-			 * getting an inode that was moved from one parent A to
-			 * a parent B, got its former parent A deleted and then
-			 * it got fsync'ed, from existing at both parents after
-			 * a log replay (and the old parent still existing).
-			 * Example:
-			 *
-			 * mkdir /mnt/A
-			 * mkdir /mnt/B
-			 * touch /mnt/B/bar
-			 * sync
-			 * mv /mnt/B/bar /mnt/A/bar
-			 * mv -T /mnt/A /mnt/B
-			 * fsync /mnt/B/bar
-			 * <power fail>
-			 *
-			 * If we ignore the old parent B which got deleted,
-			 * after a log replay we would have file bar linked
-			 * at both parents and the old parent B would still
-			 * exist.
-			 */
-			if (IS_ERR(dir_inode)) {
-				ret = PTR_ERR(dir_inode);
-				goto out;
-			}
+			/* If parent inode was deleted, skip it. */
+			if (IS_ERR(dir_inode))
+				continue;
 
 			if (ctx)
 				ctx->log_new_dentries = false;
@@ -5713,13 +5641,7 @@ static int btrfs_log_inode_parent(struct btrfs_trans_handle *trans,
 	if (ret)
 		goto end_no_trans;
 
-	/*
-	 * Skip already logged inodes or inodes corresponding to tmpfiles
-	 * (since logging them is pointless, a link count of 0 means they
-	 * will never be accessible).
-	 */
-	if (btrfs_inode_in_log(inode, trans->transid) ||
-	    inode->vfs_inode.i_nlink == 0) {
+	if (btrfs_inode_in_log(inode, trans->transid)) {
 		ret = BTRFS_NO_LOG_SYNC;
 		goto end_no_trans;
 	}
