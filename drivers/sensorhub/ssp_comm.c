@@ -104,7 +104,7 @@ static int do_transfer(struct ssp_data *data, struct ssp_msg *msg, int timeout)
 	mutex_lock(&data->comm_mutex);
 
 	if (!is_sensorhub_working(data)) {
-		ssp_errf("ssp shutdown, do not parse");
+		ssp_errf("sensorhub is not working");
 		mutex_unlock(&data->comm_mutex);
 		return -EIO;
 	}

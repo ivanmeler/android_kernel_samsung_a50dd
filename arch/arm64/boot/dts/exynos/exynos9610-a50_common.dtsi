@@ -638,7 +638,7 @@
 				/* value = <device host> */
 				hs_tune1 {
 					tune_name = "tx_vref";
-					tune_value = <0xd 0xa>;
+					tune_value = <0xf 0xa>;
 				};
 
 				hs_tune2 {

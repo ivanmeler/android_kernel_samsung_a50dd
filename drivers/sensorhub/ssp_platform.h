@@ -19,6 +19,10 @@
 
 #include <linux/kernel.h>
 
+
+#define SSP_BOOTLOADER_FILE	"sensorhub/shub_bl.fw"
+#define SSP_UPDATE_BIN_FILE	"shub.bin"
+
 struct ssp_data;
 
 void* ssp_device_probe(struct device *);

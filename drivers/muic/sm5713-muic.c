@@ -1117,26 +1117,6 @@ static int attach_jig_uart_path(struct sm5713_muic_data *muic_data, int new_dev)
 	return ret;
 }
 
-void sm5713_muic_set_bc12off(int enable)
-{
-	struct i2c_client *i2c = static_data->i2c;
-	int reg_value = 0;
-
-	pr_info("[%s:%s] enable=%d\n", MUIC_DEV_NAME, __func__, enable);
-	if (static_data == NULL)
-		return;
-
-	reg_value = sm5713_i2c_read_byte(i2c, SM5713_MUIC_REG_CNTL);
-	if (enable == 1) /* 1:bc12 enable , 0:bc12 disable*/
-		reg_value = reg_value & 0xFD;
-	else
-		reg_value = reg_value | 0x02;
-	sm5713_i2c_write_byte(i2c, SM5713_MUIC_REG_CNTL, reg_value);
-	pr_info("[%s:%s] reg_value = 0x%x\n", MUIC_DEV_NAME,
-			__func__, reg_value);
-}
-EXPORT_SYMBOL(sm5713_muic_set_bc12off);
-
 int sm5713_muic_get_jig_status(void)
 {
 	struct i2c_client *i2c = static_data->i2c;
@@ -1347,6 +1327,8 @@ static void sm5713_muic_handle_attach(struct sm5713_muic_data *muic_data,
 
 	switch (new_dev) {
 	case ATTACHED_DEV_OTG_MUIC:
+
+	/* FALLTHROUGH */
 	case ATTACHED_DEV_USB_MUIC:
 	case ATTACHED_DEV_CDP_MUIC:
 		ret = com_to_usb(muic_data);

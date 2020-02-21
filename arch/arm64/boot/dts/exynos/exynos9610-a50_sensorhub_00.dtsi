@@ -12,7 +12,7 @@
 #include <dt-bindings/clock/exynos9610.h>
 
 &contexthub_0 {
-	os-type = "shub_exynos9610_a50.bin";
+	os-type = "sensorhub/shub_exynos9610_a50.fw";
 	/* chub irq pin lists */
 	chub-irq-pin-len = <1>;
 	chub-irq-pin = <&gpm8 0 0>;

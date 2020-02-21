@@ -34,6 +34,8 @@ int reset_mcu(struct ssp_data *data)
 {
 	int ret;
 	ssp_infof();
+	
+	disable_timestamp_sync_timer(data);
 	ret = sensorhub_reset(data);
 	return ret;
 }
@@ -45,6 +47,8 @@ void recovery_mcu(struct ssp_data *data, int reason)
 	data->is_reset_from_kernel = true;
 	data->is_reset_started = true;
 	//save_ram_dump(data, reason);
+	
+	disable_timestamp_sync_timer(data);
 	sensorhub_reset(data);
 }
 
@@ -97,7 +101,7 @@ static void print_sensordata(struct ssp_data *data, unsigned int sensor_type)
 		ssp_info("%u : %d, %d, %d (%lld) (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].x, data->buf[sensor_type].y,
 		         data->buf[sensor_type].z,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
@@ -105,7 +109,7 @@ static void print_sensordata(struct ssp_data *data, unsigned int sensor_type)
 		ssp_info("%u : %d, %d, %d, %d (%lld) (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].cal_x, data->buf[sensor_type].cal_y,
 		         data->buf[sensor_type].cal_z, data->buf[sensor_type].accuracy,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
@@ -118,7 +122,7 @@ static void print_sensordata(struct ssp_data *data, unsigned int sensor_type)
 		         data->buf[sensor_type].offset_x,
 		         data->buf[sensor_type].offset_y,
 		         data->buf[sensor_type].offset_z,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
@@ -126,7 +130,7 @@ static void print_sensordata(struct ssp_data *data, unsigned int sensor_type)
 		ssp_info("%u : %d, %d (%lld) (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].pressure,
 		         data->buf[sensor_type].temperature,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
@@ -136,21 +140,21 @@ static void print_sensordata(struct ssp_data *data, unsigned int sensor_type)
 		         data->buf[sensor_type].r, data->buf[sensor_type].g,
 		         data->buf[sensor_type].b, data->buf[sensor_type].w,
 		         data->buf[sensor_type].a_time, data->buf[sensor_type].a_gain,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
 	case SENSOR_TYPE_PROXIMITY:
 		ssp_info("%u : %d, %d (%lld) (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].prox, data->buf[sensor_type].prox_ex,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
 	case SENSOR_TYPE_STEP_DETECTOR:
 		ssp_info("%u : %u (%lld)  (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].step_det,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
@@ -160,20 +164,21 @@ static void print_sensordata(struct ssp_data *data, unsigned int sensor_type)
 		         data->buf[sensor_type].quat_a, data->buf[sensor_type].quat_b,
 		         data->buf[sensor_type].quat_c, data->buf[sensor_type].quat_d,
 		         data->buf[sensor_type].acc_rot,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
 	case SENSOR_TYPE_SIGNIFICANT_MOTION:
 		ssp_info("%u : %u (%lld) (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].sig_motion,
+                         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
 	case SENSOR_TYPE_STEP_COUNTER:
 		ssp_info("%u : %u (%lld) (%ums, %dms)", sensor_type,
 		         data->buf[sensor_type].step_diff,
-		         data->latest_timestamp[sensor_type],
+		         data->buf[sensor_type].timestamp,
 		         data->delay[sensor_type].sampling_period,
 		         data->delay[sensor_type].max_report_latency);
 		break;
@@ -205,7 +210,7 @@ static void debug_work_func(struct work_struct *work)
 	} else if (data->cnt_com_fail > LIMIT_COMFAIL_CNT) {
 		data->reset_type = RESET_KERNEL_COM_FAIL;
 		recovery_mcu(data, RESET_KERNEL_COM_FAIL);
-	} else*/ if(check_no_event(data)) {
+	} else*/ if(is_sensorhub_working(data) && !data->is_reset_started && check_no_event(data)) {
 		ssp_dbgf("no event, no sensorhub reset");
 		data->reset_type = RESET_KERNEL_NO_EVENT;
 		recovery_mcu(data, RESET_KERNEL_NO_EVENT);

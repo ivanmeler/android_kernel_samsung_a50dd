@@ -1499,16 +1499,20 @@ retry_get_frame:
 	return ret;
 }
 
-void check_late_shot(struct fimc_is_hw_ip *hw_ip)
+void check_late_shot(struct fimc_is_hw_ip *hw_ip, u32 fcount)
 {
 	struct fimc_is_frame *frame;
 	struct fimc_is_framemgr *framemgr = hw_ip->framemgr_late;
 
 	framemgr_e_barrier(framemgr, 0);
 
-	frame = get_frame(framemgr, FS_HW_REQUEST);
-	if (frame) {
-		put_frame(framemgr, frame, FS_HW_WAIT_DONE);
+	/*
+	 * Handle LATE_FRAME error only for the frame that is being processed
+	 * or has been processed.
+	 */
+	frame = peek_frame(framemgr, FS_HW_REQUEST);
+	if (frame && frame->fcount <= fcount) {
+		trans_frame(framemgr, frame, FS_HW_WAIT_DONE);
 
 		framemgr_x_barrier(framemgr, 0);
 
@@ -1625,13 +1629,13 @@ void fimc_is_hardware_frame_start(struct fimc_is_hw_ip *hw_ip, u32 instance)
 
 		put_frame(framemgr, frame, FS_HW_WAIT_DONE);
 		framemgr_x_barrier(framemgr, 0);
+
+		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &head->state))
+			check_late_shot(hw_ip, frame->fcount);
 	}
 
 	clear_bit(HW_CONFIG, &hw_ip->state);
 	atomic_set(&hw_ip->status.Vvalid, V_VALID);
-
-	if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &hw_ip->group[instance]->state))
-		check_late_shot(hw_ip);
 }
 
 int fimc_is_hardware_sensor_start(struct fimc_is_hardware *hardware, u32 instance,

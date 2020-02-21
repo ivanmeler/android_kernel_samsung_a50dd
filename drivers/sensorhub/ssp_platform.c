@@ -127,7 +127,7 @@ void ssp_dump_write_file(void *ssp_data, int sec_time, int reason, void *sram_bu
 bool is_sensorhub_working(void *ssp_data)
 {
 	struct contexthub_ipc_info *ipc = ((struct ssp_data *)ssp_data)->platform_data;
-	if(atomic_read(&ipc->chub_status) == CHUB_ST_RUN)
+	if(atomic_read(&ipc->chub_status) == CHUB_ST_RUN && atomic_read(&ipc->in_reset) == 0)
 		return true;
 	else 
 		return false;
