@@ -956,15 +956,32 @@ int contexthub_download_image(struct contexthub_ipc_info *ipc, enum ipc_region r
 
 	dev_info(ipc->dev, "%s: enter for bl:%d\n", __func__, reg == IPC_REG_BL);
 	if (reg == IPC_REG_BL)
+#ifdef CONFIG_SENSORS_SSP
+		ret = request_firmware(&entry, SSP_BOOTLOADER_FILE, ipc->dev);
+#else
 		ret = request_firmware(&entry, "bl.unchecked.bin", ipc->dev);
+#endif
 	else if (reg == IPC_REG_OS)
+#ifdef CONFIG_SENSORS_SSP
+	{
+#ifdef CONFIG_SSP_ENG_DEBUG	
+		ret = request_firmware(&entry, SSP_UPDATE_BIN_FILE, ipc->dev);
+		if(ret)
+#endif
+		{
+			ret = request_firmware(&entry, ipc->os_name, ipc->dev);
+			dev_info(ipc->dev, "%s, use %s" , __func__, ipc->os_name);
+		}
+	}
+#else
 		ret = request_firmware(&entry, ipc->os_name, ipc->dev);
+#endif
 	else
 		ret = -EINVAL;
 
 	if (ret) {
 		dev_err(ipc->dev, "%s, bl(%d) request_firmware failed\n",
-			reg == IPC_REG_BL, __func__);
+			__func__, reg == IPC_REG_BL);
 		return ret;
 	}
 	memcpy(ipc_get_base(reg), entry->data, entry->size);

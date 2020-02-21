@@ -54,6 +54,9 @@ static enum ccic_sysfs_property sm5713_sysfs_properties[] = {
 	CCIC_SYSFS_PROP_ACC_DEVICE_VERSION,
 	CCIC_SYSFS_PROP_USBPD_IDS,
 	CCIC_SYSFS_PROP_USBPD_TYPE,
+#if defined(CONFIG_SEC_FACTORY)
+	CCIC_SYSFS_PROP_VBUS_ADC,
+#endif
 };
 #endif
 #if defined(CONFIG_DUAL_ROLE_USB_INTF)
@@ -240,7 +243,7 @@ static void sm5713_usbpd_abnormal_reset_check(struct sm5713_phydrv_data *pdic_da
 	u8 reg_data = 0;
 
 	sm5713_usbpd_read_reg(i2c, SM5713_REG_CC_CNTL1, &reg_data);
-	pr_info("%s, CC_CNTL2 : 0x%x\n", __func__, reg_data);
+	pr_info("%s, CC_CNTL1 : 0x%x\n", __func__, reg_data);
 
 	if (reg_data == 0x84) /* surge reset */
 		sm5713_usbpd_reg_init(pdic_data);
@@ -302,8 +305,11 @@ static int sm5713_set_lpm_mode(struct sm5713_phydrv_data *pdic_data)
 	struct device *dev = &i2c->dev;
 
 	pdic_data->lpm_mode = true;
-
+#if defined(CONFIG_SM5713_WATER_DETECTION_ENABLE)
 	sm5713_usbpd_write_reg(i2c, SM5713_REG_CORR_CNTL4, 0x97);
+#else
+	sm5713_usbpd_write_reg(i2c, SM5713_REG_CORR_CNTL4, 0x92);
+#endif
 
 	dev_info(dev, "%s sm5713 enter lpm mode\n", __func__);
 
@@ -354,7 +360,26 @@ static void sm5713_corr_sbu_volt_read(void *_data, u8 *adc_sbu1,
 	pr_info("%s, mode : %d, SBU1_VOLT : 0x%x, SBU2_VOLT : 0x%x\n",
 			__func__, mode, adc_value1, adc_value2);
 }
+#if defined(CONFIG_SEC_FACTORY)
+static int sm5713_vbus_adc_read(void *_data)
+{
+	struct sm5713_phydrv_data *pdic_data = _data;
+	struct i2c_client *i2c = pdic_data->i2c;
+	u8 vbus_adc = 0, status1 = 0;
 
+	if (!pdic_data)
+		return -ENXIO;
+
+	sm5713_usbpd_read_reg(i2c, SM5713_REG_STATUS1, &status1);
+	sm5713_usbpd_write_reg(i2c, SM5713_REG_ADC_CTRL1, SM5713_ADC_PATH_SEL_VBUS);
+	sm5713_adc_value_read(pdic_data, &vbus_adc);
+
+	pr_info("%s, STATUS1 = 0x%x, VBUS_VOLT : 0x%x\n",
+			__func__, status1, vbus_adc);
+
+	return vbus_adc; /* 0 is OK, others are NG */
+}
+#endif
 #if defined(CONFIG_SM5713_WATER_DETECTION_ENABLE)
 static void sm5713_process_cc_water_det(void *data, int state)
 {
@@ -1337,6 +1362,13 @@ static int sm5713_sysfs_get_prop(struct _ccic_data_t *pccic_data,
 		retval = sprintf(buf, "%d\n", manager->acc_type);
 		pr_info("%s : CCIC_SYSFS_PROP_USBPD_TYPE : %s", __func__, buf);
 		break;
+#if defined(CONFIG_SEC_FACTORY)
+	case CCIC_SYSFS_PROP_VBUS_ADC:
+		manager->vbus_adc = sm5713_vbus_adc_read(usbpd_data);
+		retval = sprintf(buf, "%d\n", manager->vbus_adc);
+		pr_info("%s : CCIC_SYSFS_PROP_VBUS_ADC : %s", __func__, buf);
+		break;
+#endif
 	default:
 		pr_info("%s : prop read not supported prop (%d)\n",
 				__func__, prop);

@@ -433,6 +433,21 @@ void * fimc_is_gframe_rewind(struct fimc_is_groupmgr *groupmgr,
 	return gframe;
 }
 
+void *fimc_is_gframe_group_find(struct fimc_is_group *group, u32 target_fcount)
+{
+	struct fimc_is_group_frame *gframe;
+
+	FIMC_BUG_NULL(!group);
+	FIMC_BUG_NULL(group->instance >= FIMC_IS_STREAM_COUNT);
+
+	list_for_each_entry(gframe, &group->gframe_head, list) {
+		if (gframe->fcount == target_fcount)
+			return gframe;
+	}
+
+	return NULL;
+}
+
 int fimc_is_gframe_flush(struct fimc_is_groupmgr *groupmgr,
 	struct fimc_is_group *group)
 {
@@ -2527,7 +2542,8 @@ int fimc_is_group_buffer_queue(struct fimc_is_groupmgr *groupmgr,
 #ifdef SENSOR_REQUEST_DELAY
 		if (test_bit(FIMC_IS_GROUP_OTF_INPUT, &group->state) &&
 			(frame->shot->uctl.opMode == CAMERA_OP_MODE_HAL3_GED
-			|| frame->shot->uctl.opMode == CAMERA_OP_MODE_HAL3_SDK)) {
+			|| frame->shot->uctl.opMode == CAMERA_OP_MODE_HAL3_SDK
+			|| frame->shot->uctl.opMode == CAMERA_OP_MODE_HAL3_CAMERAX)) {
 			int req_cnt = 0;
 			struct fimc_is_frame *prev;
 			list_for_each_entry_reverse(prev, &framemgr->queued_list[FS_REQUEST], list) {
@@ -3407,8 +3423,8 @@ int fimc_is_group_done(struct fimc_is_groupmgr *groupmgr,
 	if (unlikely((done_state != VB2_BUF_STATE_DONE) && gnext)) {
 		spin_lock_irqsave(&gframemgr->gframe_slock, flags);
 
-		fimc_is_gframe_group_head(gnext, &gframe);
-		if (gframe && (gframe->fcount == frame->fcount)) {
+		gframe = fimc_is_gframe_group_find(gnext, frame->fcount);
+		if (gframe) {
 			ret = fimc_is_gframe_trans_grp_to_fre(gframemgr, gframe, gnext);
 			if (ret) {
 				mgerr("fimc_is_gframe_trans_grp_to_fre is fail(%d)", device, gnext, ret);

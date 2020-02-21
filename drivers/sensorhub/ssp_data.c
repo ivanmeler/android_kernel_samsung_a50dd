@@ -66,12 +66,14 @@ void get_timestamp(struct ssp_data *data, char *dataframe,
 	memset(&timestamp_ns, 0, 8);
 	memcpy(&timestamp_ns, dataframe + *ptr_data, 8);
 
-	data->latest_timestamp[type] = timestamp_ns;
-	if (data->latest_timestamp[type] > current_timestamp) {
+	if (timestamp_ns > current_timestamp) {
 		//ssp_infof("future timestamp(%d) : last = %lld, cur = %lld", type, data->latest_timestamp[type], current_timestamp);
-		data->latest_timestamp[type] = current_timestamp;
+		timestamp_ns = current_timestamp;
 	} 
-	event->timestamp = data->latest_timestamp[type];
+	event->timestamp = timestamp_ns;
+        data->buf[type].timestamp = event->timestamp;
+	data->latest_timestamp[type] = current_timestamp;
+	
 	*ptr_data += 8;
 }
 

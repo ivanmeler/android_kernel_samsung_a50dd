@@ -1450,6 +1450,10 @@ static int slsi_start_keepalive_offload(struct wiphy *wiphy, struct wireless_dev
 
 		switch (type) {
 		case MKEEP_ALIVE_ATTRIBUTE_IP_PKT_LEN:
+			if (nla_len(attr) != (SLSI_NL_ATTRIBUTE_U16_LEN - NLA_HDRLEN)) {
+				r = -EINVAL;
+				goto exit;
+			}
 			ip_pkt_len = nla_get_u16(attr);
 			break;
 
@@ -1458,6 +1462,10 @@ static int slsi_start_keepalive_offload(struct wiphy *wiphy, struct wireless_dev
 			break;
 
 		case MKEEP_ALIVE_ATTRIBUTE_PERIOD_MSEC:
+			if (nla_len(attr) != (SLSI_NL_ATTRIBUTE_U32_LEN - NLA_HDRLEN)) {
+				r = -EINVAL;
+				goto exit;
+			}
 			period = nla_get_u32(attr);
 			break;
 
@@ -1471,6 +1479,10 @@ static int slsi_start_keepalive_offload(struct wiphy *wiphy, struct wireless_dev
 
 		case MKEEP_ALIVE_ATTRIBUTE_ID:
 			index = nla_get_u8(attr);
+			if (index > SLSI_MAX_KEEPALIVE_ID) {
+				r = -EINVAL;
+				goto exit;
+			}
 			break;
 
 		default:
@@ -1581,6 +1593,10 @@ static int slsi_stop_keepalive_offload(struct wiphy *wiphy, struct wireless_dev 
 		switch (type) {
 		case MKEEP_ALIVE_ATTRIBUTE_ID:
 			index = nla_get_u8(attr);
+			if (index > SLSI_MAX_KEEPALIVE_ID) {
+				r = -EINVAL;
+				goto exit;
+			}
 			break;
 
 		default:

@@ -595,14 +595,6 @@ exit:
 	kfree(data);
 }
 
-void ssp_timestamp_resume(struct ssp_data *data)
-{
-	int type;
-	for (type = 0; type < SENSOR_TYPE_MAX; type++) {
-		data->latest_timestamp[type] = 0;
-	}
-}
-
 /* this callback is called before suspend */
 int ssp_suspend(struct ssp_data *data)
 {
@@ -629,7 +621,6 @@ void ssp_resume(struct ssp_data *data)
 	enable_debug_timer(data);
 	enable_timestamp_sync_timer(data);
 	//disable_irq_wake(data->irq);
-	ssp_timestamp_resume(data);
 
 //	if (SUCCESS != ssp_send_status(data, SCONTEXT_AP_STATUS_RESUME)) {
 //		ssp_errf("SCONTEXT_AP_STATUS_RESUME failed");

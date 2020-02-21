@@ -25,6 +25,10 @@ fw-shipped-$(CONFIG_FIVE_TEE_DRIVER) += five/ffffffff000000000000000000000072.tl
 fw-external-$(CONFIG_SENSORS_A96T3X6) += abov/a96t326_voguelte.fw
 fw-external-$(CONFIG_SENSORS_TC3XXK) += coreriver/tc305k_a50ser.fw
 
+# sensorhub
+fw-external-$(CONFIG_SENSORS_SSP) += sensorhub/shub_bl.fw
+fw-external-$(CONFIG_SENSORS_SSP_A50) += sensorhub/shub_exynos9610_a50.fw
+
 quiet_cmd_ihex  = IHEX    $@
       cmd_ihex  = $(OBJCOPY) -Iihex -Obinary $< $@
 

@@ -80,6 +80,9 @@ struct rt5665_drvdata {
 	unsigned int pcm_state;
 	struct wake_lock wake_lock;
 	unsigned int wake_lock_switch;
+
+	int uaifp_count;
+	int uaifc_count;
 };
 
 static struct rt5665_drvdata exynos9610_drvdata;
@@ -116,6 +119,24 @@ static int exynos9610_rt5665_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai_link *dai_link = rtd->dai_link;
 
 	drvdata->pcm_state |= (1 << dai_link->id);
+
+	if ((drvdata->uaifp_count == 0) && (drvdata->uaifc_count == 0)) {
+		dev_info(card->dev, "%s: BCLK Enable\n", __func__);
+		snd_soc_dai_set_tristate(rtd->cpu_dai, 0);
+	}
+
+	if ((substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+			&& (drvdata->uaifp_count == 0)) {
+		drvdata->uaifp_count++;
+	} else if ((substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+			&& (drvdata->uaifc_count == 0)) {
+		drvdata->uaifc_count++;
+	} else {
+		dev_err(card->dev, "%s: cnt check stream %d, uaifp_cnt %d, uaifc_cnt %d\n",
+			__func__, substream->stream, drvdata->uaifp_count, drvdata->uaifc_count);
+	}
+	dev_info(card->dev, "%s: uaifp_cnt %d, uaifc_cnt %d\n", __func__,
+			drvdata->uaifp_count, drvdata->uaifc_count);
 
 	dev_info(card->dev, "%s: %s-%d %dch, %dHz, %dbit, %dbytes (pcm_state: 0x%07x)\n",
 			__func__, rtd->dai_link->name, substream->stream,
@@ -155,6 +176,25 @@ static int exynos9610_rt5665_hw_free(struct snd_pcm_substream *substream)
 	dev_info(card->dev, "%s: %s-%d (pcm_state: 0x%07x)\n",
 			__func__, rtd->dai_link->name, substream->stream,
 			drvdata->pcm_state);
+
+	if ((substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+			&& (drvdata->uaifp_count > 0)) {
+		drvdata->uaifp_count--;
+	} else if ((substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+			&& (drvdata->uaifc_count > 0)) {
+		drvdata->uaifc_count--;
+	} else {
+		dev_err(card->dev, "%s: cnt check stream %d, uaifp_cnt %d, uaifc_cnt %d\n",
+			__func__, substream->stream, drvdata->uaifp_count, drvdata->uaifc_count);
+	}
+
+	if ((drvdata->uaifp_count == 0) && (drvdata->uaifc_count == 0)) {
+		dev_info(card->dev, "%s: BCLK Disable\n", __func__);
+		snd_soc_dai_set_tristate(rtd->cpu_dai, 1);
+	}
+
+	dev_info(card->dev, "%s: uaifp_cnt %d, uaifc_cnt %d\n", __func__,
+			drvdata->uaifp_count, drvdata->uaifc_count);
 
 	return 0;
 }
